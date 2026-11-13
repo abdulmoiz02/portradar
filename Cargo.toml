@@ -6,3 +6,5 @@ description = "Interactive terminal dashboard to monitor and manage network port
 readme = "README.md"
 
 [dependencies]
+nix = { version = "0.31.3", features = ["user"] }
+procfs = "0.18.0"
