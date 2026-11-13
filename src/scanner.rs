@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use procfs::net::{TcpState, tcp, tcp6, udp, udp6};
 use procfs::process::{FDTarget, all_processes};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -47,6 +47,27 @@ pub struct PortEntry {
     /// `None` when the owning process could not be found, which usually
     /// means it belongs to another user and we are not root.
     pub process: Option<ProcessInfo>,
+}
+
+/// Identity of a socket across scans. Used to tell which rows are new,
+/// which disappeared, and to keep the dashboard cursor on the same row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EntryKey {
+    pub protocol: Protocol,
+    pub local: SocketAddr,
+    pub remote: SocketAddr,
+    pub inode: u64,
+}
+
+impl PortEntry {
+    pub fn key(&self) -> EntryKey {
+        EntryKey {
+            protocol: self.protocol,
+            local: self.local,
+            remote: self.remote,
+            inode: self.inode,
+        }
+    }
 }
 
 /// Scan all TCP and UDP sockets (IPv4 and IPv6).
