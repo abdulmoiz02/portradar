@@ -28,6 +28,20 @@ impl fmt::Display for Protocol {
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
+    /// When the process started, in seconds since the Unix epoch.
+    pub started_at: Option<u64>,
+}
+
+impl ProcessInfo {
+    /// How long the process has been running, if its start time is known.
+    pub fn running_for_secs(&self) -> Option<u64> {
+        let started = self.started_at?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        Some(now.saturating_sub(started))
+    }
 }
 
 /// One row of the socket table.
@@ -124,6 +138,8 @@ fn socket_owners() -> HashMap<u64, ProcessInfo> {
     let Ok(processes) = all_processes() else {
         return owners;
     };
+    let boot_time = procfs::boot_time_secs().ok();
+    let ticks = procfs::ticks_per_second().max(1);
 
     for process in processes.flatten() {
         let Ok(fds) = process.fd() else { continue };
@@ -131,12 +147,19 @@ fn socket_owners() -> HashMap<u64, ProcessInfo> {
 
         for fd in fds.flatten() {
             if let FDTarget::Socket(inode) = fd.target {
-                let info = info.get_or_insert_with(|| ProcessInfo {
-                    pid: process.pid as u32,
-                    name: process
-                        .stat()
-                        .map(|s| s.comm)
-                        .unwrap_or_else(|_| "?".to_string()),
+                let info = info.get_or_insert_with(|| {
+                    let stat = process.stat().ok();
+                    ProcessInfo {
+                        pid: process.pid as u32,
+                        name: stat
+                            .as_ref()
+                            .map(|s| s.comm.clone())
+                            .unwrap_or_else(|| "?".to_string()),
+                        started_at: stat
+                            .as_ref()
+                            .zip(boot_time)
+                            .map(|(s, boot)| boot + s.starttime / ticks),
+                    }
                 });
                 // A socket can be shared by several processes (fork);
                 // keep the first one found.

@@ -37,7 +37,6 @@ impl Hint {
 pub struct Details {
     pub cmdline: String,
     pub cwd: Option<String>,
-    pub exe: Option<String>,
     pub running_for_secs: Option<u64>,
     pub hint: Option<Hint>,
 }
@@ -54,7 +53,6 @@ pub fn inspect(pid: u32, process_name: &str) -> Details {
         .map(|parts| parts.join(" "))
         .unwrap_or_default();
     let cwd = process.cwd().ok().map(|p| p.display().to_string());
-    let exe = process.exe().ok().map(|p| p.display().to_string());
     let running_for_secs = process.stat().ok().and_then(|stat| {
         let boot = procfs::boot_time_secs().ok()?;
         let started = boot + stat.starttime / procfs::ticks_per_second();
@@ -69,7 +67,6 @@ pub fn inspect(pid: u32, process_name: &str) -> Details {
     Details {
         cmdline,
         cwd,
-        exe,
         running_for_secs,
         hint,
     }
@@ -115,6 +112,19 @@ pub fn classify(process_name: &str, cgroup: &str) -> Option<Hint> {
 
 fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
+}
+
+/// Very short form for table cells: "42s", "5m", "3h", "12d".
+pub fn short_duration(secs: u64) -> String {
+    if secs >= 86_400 {
+        format!("{}d", secs / 86_400)
+    } else if secs >= 3_600 {
+        format!("{}h", secs / 3_600)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
 }
 
 pub fn human_duration(secs: u64) -> String {
@@ -176,6 +186,15 @@ mod tests {
         let cg = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-code.scope\n";
         assert_eq!(classify("code", cg), None);
         assert_eq!(classify("bash", ""), None);
+    }
+
+    #[test]
+    fn formats_short_durations() {
+        assert_eq!(short_duration(7), "7s");
+        assert_eq!(short_duration(59), "59s");
+        assert_eq!(short_duration(600), "10m");
+        assert_eq!(short_duration(7_300), "2h");
+        assert_eq!(short_duration(5 * 86_400 + 100), "5d");
     }
 
     #[test]

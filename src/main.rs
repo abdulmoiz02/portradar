@@ -3,6 +3,7 @@ mod inspect;
 mod kill;
 mod model;
 mod scanner;
+mod services;
 mod ui;
 
 use std::fmt::Write as _;
@@ -79,6 +80,7 @@ fn dashboard() -> ExitCode {
 fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut app = App::new(nix::unistd::geteuid().is_root());
     app.rescan();
+    app.welcome();
     let mut last_scan = Instant::now();
 
     while !app.should_quit {

@@ -23,14 +23,6 @@ pub enum Tab {
 impl Tab {
     pub const ALL: [Tab; 3] = [Tab::Listening, Tab::Connections, Tab::Events];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Listening => "Listening",
-            Tab::Connections => "Connections",
-            Tab::Events => "Events",
-        }
-    }
-
     pub fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
@@ -109,6 +101,11 @@ impl App {
             is_root,
             scan_error: None,
         }
+    }
+
+    /// One-time greeting in the footer for people opening it the first time.
+    pub fn welcome(&mut self) {
+        self.set_status("Welcome! ? shows all keys · / searches · k stops a process", false);
     }
 
     // ---- data -------------------------------------------------------
@@ -413,6 +410,7 @@ mod tests {
             process: process.map(|(n, pid)| ProcessInfo {
                 pid,
                 name: n.into(),
+                started_at: None,
             }),
         }
     }
@@ -524,7 +522,7 @@ mod tests {
     #[test]
     fn confirming_a_kill_stops_the_process_and_reports_it() {
         use std::os::unix::process::ExitStatusExt;
-        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut child = crate::kill::spawn_sleeper();
         let mut app = app_with(vec![listener(3000, 1, Some(("sleep", child.id())))]);
 
         press(&mut app, KeyCode::Char('k'));

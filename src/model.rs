@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::scanner::PortEntry;
+use crate::services::{Access, service_name};
 
 /// How long a freshly opened port is shown in green.
 pub const NEW_HIGHLIGHT: Duration = Duration::from_secs(3);
@@ -122,6 +123,23 @@ impl Tracker {
             .count()
     }
 
+    /// Listening ports that something other than this computer may reach.
+    pub fn exposed_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| r.closed_at.is_none() && r.entry.listening)
+            .filter(|r| Access::of(r.entry.local.ip()).is_exposed())
+            .count()
+    }
+
+    /// Listening ports whose owning process we are not allowed to see.
+    pub fn hidden_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| r.closed_at.is_none() && r.entry.listening && r.entry.process.is_none())
+            .count()
+    }
+
     pub fn connection_count(&self) -> usize {
         self.rows
             .iter()
@@ -162,6 +180,10 @@ pub enum SortKey {
     Process,
     Pid,
     User,
+    /// Shortest-running first, i.e. what started most recently.
+    Uptime,
+    /// Least exposed first (this PC only, then one network, then all).
+    Access,
 }
 
 impl SortKey {
@@ -170,7 +192,9 @@ impl SortKey {
             SortKey::Port => SortKey::Process,
             SortKey::Process => SortKey::Pid,
             SortKey::Pid => SortKey::User,
-            SortKey::User => SortKey::Port,
+            SortKey::User => SortKey::Uptime,
+            SortKey::Uptime => SortKey::Access,
+            SortKey::Access => SortKey::Port,
         }
     }
 
@@ -180,6 +204,8 @@ impl SortKey {
             SortKey::Process => "process",
             SortKey::Pid => "pid",
             SortKey::User => "user",
+            SortKey::Uptime => "uptime",
+            SortKey::Access => "access",
         }
     }
 }
@@ -198,6 +224,12 @@ pub fn sort_rows(rows: &mut [&Row], key: SortKey, reverse: bool) {
             None => (1, 0),
         }),
         SortKey::User => rows.sort_by_cached_key(|r| r.entry.user.to_lowercase()),
+        SortKey::Uptime => rows.sort_by_key(|r| match r.entry.process.as_ref().and_then(|p| p.started_at) {
+            // Larger start time = started later = shorter uptime = first.
+            Some(started) => (0, std::cmp::Reverse(started)),
+            None => (1, std::cmp::Reverse(0)),
+        }),
+        SortKey::Access => rows.sort_by_key(|r| Access::of(r.entry.local.ip())),
     }
     if reverse {
         rows.reverse();
@@ -205,7 +237,8 @@ pub fn sort_rows(rows: &mut [&Row], key: SortKey, reverse: bool) {
 }
 
 /// Case-insensitive match; every whitespace-separated word must appear in
-/// the protocol, port, address, PID, process name or user.
+/// the protocol, port, address, service name, access label ("this PC
+/// only", "whole network"), PID, process name or user.
 pub fn matches(entry: &PortEntry, filter: &str) -> bool {
     let filter = filter.trim();
     if filter.is_empty() {
@@ -216,10 +249,12 @@ pub fn matches(entry: &PortEntry, filter: &str) -> bool {
         None => (String::new(), ""),
     };
     let haystack = format!(
-        "{} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {}",
         entry.protocol,
         entry.local.port(),
         entry.local.ip(),
+        service_name(entry.protocol, entry.local.port()).unwrap_or(""),
+        Access::of(entry.local.ip()).label(),
         pid,
         name,
         entry.user
@@ -255,6 +290,7 @@ mod tests {
             process: name.map(|n| ProcessInfo {
                 pid: 100 + port as u32,
                 name: n.to_string(),
+                started_at: None,
             }),
         }
     }
@@ -335,6 +371,65 @@ mod tests {
         assert!(matches(&e, "127.0.0"));
         assert!(!matches(&e, "node"));
         assert!(!matches(&e, "python udp"));
+    }
+
+    #[test]
+    fn counts_exposed_and_hidden_listeners() {
+        let (now, wall) = t0();
+        let mut open = entry(80, 1, None, true);
+        open.local = "0.0.0.0:80".parse().unwrap();
+        let local = entry(5432, 2, Some("postgres"), true);
+        let conn = entry(443, 3, Some("curl"), false);
+        let mut t = Tracker::default();
+        t.update(vec![open, local, conn], now, wall);
+        assert_eq!(t.listening_count(), 2);
+        assert_eq!(t.exposed_count(), 1);
+        assert_eq!(t.hidden_count(), 1);
+    }
+
+    #[test]
+    fn filter_understands_service_names_and_access() {
+        let local = entry(5432, 1, Some("postgres"), true);
+        assert!(matches(&local, "postgresql"));
+        assert!(matches(&local, "this pc"));
+        assert!(!matches(&local, "network"));
+
+        let mut open = entry(80, 2, Some("nginx"), true);
+        open.local = "0.0.0.0:80".parse().unwrap();
+        assert!(matches(&open, "http"));
+        assert!(matches(&open, "whole network"));
+    }
+
+    #[test]
+    fn sorting_by_uptime_shows_newest_first_and_unknown_last() {
+        let mk = |port: u16, started: Option<u64>| {
+            let mut e = entry(port, port as u64, Some("p"), true);
+            e.process.as_mut().unwrap().started_at = started;
+            Row { entry: e, first_seen: None, closed_at: None }
+        };
+        let old = mk(1, Some(1_000));
+        let new = mk(2, Some(9_000));
+        let unknown = mk(3, None);
+        let mut rows = vec![&old, &unknown, &new];
+        sort_rows(&mut rows, SortKey::Uptime, false);
+        let ports: Vec<_> = rows.iter().map(|r| r.entry.local.port()).collect();
+        assert_eq!(ports, vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn sorting_by_access_puts_local_first() {
+        let mk = |port: u16, ip: &str| {
+            let mut e = entry(port, port as u64, Some("p"), true);
+            e.local = format!("{ip}:{port}").parse().unwrap();
+            Row { entry: e, first_seen: None, closed_at: None }
+        };
+        let open = mk(1, "0.0.0.0");
+        let local = mk(2, "127.0.0.1");
+        let one = mk(3, "192.168.1.5");
+        let mut rows = vec![&open, &local, &one];
+        sort_rows(&mut rows, SortKey::Access, false);
+        let ports: Vec<_> = rows.iter().map(|r| r.entry.local.port()).collect();
+        assert_eq!(ports, vec![2, 3, 1]);
     }
 
     #[test]

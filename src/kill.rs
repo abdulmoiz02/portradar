@@ -77,6 +77,22 @@ fn stop_with(pid: u32, expected_name: &str, force: bool, own_pid: u32) -> Result
     })
 }
 
+/// Start `sleep 60` and wait until it has really become `sleep`: right after
+/// a fork the child can still carry the parent's name in /proc/<pid>/comm,
+/// which our PID-reuse check would (correctly) refuse to signal.
+#[cfg(test)]
+pub(crate) fn spawn_sleeper() -> std::process::Child {
+    let child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    for _ in 0..200 {
+        let comm = fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
+        if comm.trim_end() == "sleep" {
+            return child;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("sleep process never started");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,7 +112,7 @@ mod tests {
 
     #[test]
     fn terminates_a_real_process() {
-        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut child = spawn_sleeper();
         stop(child.id(), "sleep", false).unwrap();
         let status = child.wait().unwrap();
         assert_eq!(status.signal(), Some(Signal::SIGTERM as i32));
@@ -104,7 +120,7 @@ mod tests {
 
     #[test]
     fn force_kills_with_sigkill() {
-        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut child = spawn_sleeper();
         stop(child.id(), "sleep", true).unwrap();
         let status = child.wait().unwrap();
         assert_eq!(status.signal(), Some(Signal::SIGKILL as i32));
@@ -112,7 +128,7 @@ mod tests {
 
     #[test]
     fn refuses_when_pid_belongs_to_a_different_program() {
-        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut child = spawn_sleeper();
         let err = stop(child.id(), "node", false).unwrap_err();
         assert!(matches!(err, KillError::Changed { .. }));
         // Still alive: clean up ourselves.

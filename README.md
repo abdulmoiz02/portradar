@@ -5,15 +5,27 @@ An interactive terminal dashboard for monitoring and managing the network ports 
 Type `portwatch` and it opens a full-screen dashboard (like `htop`, but for ports). Quit with `q` and you are back in your shell.
 
 ```
-╭ portwatch ─────────────────────────────── ⚠ 17 hidden: needs sudo  ⟳ 1s ╮
-│ 1 Listening (20) │ 2 Connections (37) │ 3 Events (2)                         │
+ ◉ portwatch   ports on this computer, live                          ● live · 1s
+╭ Open ports ──────╮╭ Exposed ─────────╮╭ Connections ─────╮╭ Hidden ──────────╮
+│        19        ││        7         ││        69        ││        17        │
+│   listening now  ││ open to network  ││    active now    ││ need sudo to see │
+╰──────────────────╯╰──────────────────╯╰──────────────────╯╰──────────────────╯
+ 1 Listening (19)   2 Connections (69)   3 Events (0)
+╭ Listening ports · sorted by port ▲ ──────────────────────────────────────────╮
+│  PORT       SERVICE         ACCESS           PROCESS          USER       UP  │
+│▌ 3000/tcp   Dev server      ● this PC only   node 4821        alice      2h  │
+│  5432/tcp   PostgreSQL      ● this PC only   postgres 1302    postgres   5d  │
+│  80/tcp     Web (HTTP)      ▲ whole network  nginx 977        root       9d  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭ Listening · sort: port ▲ ────────────────────────────────────────────────────╮
-│  PROTO  PORT   ADDRESS       PID      PROCESS        USER                    │
-│▶ tcp    3000   127.0.0.1     4821     node           alice                   │
-│  tcp    5432   127.0.0.1     1302     postgres       postgres                │
+╭ node on port 3000 · 127.0.0.1 ───────────────────────────────────────────────╮
+│ node (PID 4821) is listening on port 3000. Only this computer can reach it.  │
+│ Port 3000 is usually Dev server · started 2h 5m ago by alice · 3 open conn…  │
+│ $ node server.js                                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+ ↑↓  Move   /  Search   k  Stop   ?  Help   q  Quit
 ```
+
+The layout adapts to your terminal: on short windows the summary cards and then the details panel are hidden, and the footer drops its least important keys.
 
 ## Install and run
 
@@ -57,17 +69,24 @@ cargo install --path . --force
 |---|---|
 | `↑` `↓` `PgUp` `PgDn` `g` `G` | Move the selection |
 | `←` `→` / `Tab` / `1` `2` `3` | Switch tab: Listening, Connections, Events |
-| `/` | Filter by port, process, user, address, PID (several words must all match) |
-| `Esc` | Clear the filter |
-| `s` / `r` | Change sort column (port, process, PID, user) / reverse the order |
+| `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
+| `Esc` | Clear the search |
+| `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
 | `k` | Stop the selected process (SIGTERM). Asks to confirm first |
 | `K` | Force stop (SIGKILL). Asks to confirm first |
 | `p` | Pause or resume refreshing |
 | `?` | Help |
 | `q` / `Ctrl+C` | Quit |
 
+- **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see.
+- **SERVICE** is what that port number is normally used for (3306 is usually MySQL, 6379 Redis, and so on). It is a guess from the number only: any program can listen on any port.
+- **ACCESS** tells you who can connect:
+  - `● this PC only` (green): the port is bound to loopback, so only programs on this computer can reach it.
+  - `▲ whole network` (yellow): bound to every network interface, so other devices on your network can try to connect.
+  - `◆ one network` (yellow): bound to one specific network address.
+- **UP** is how long the program has been running.
 - **Green** rows opened in the last few seconds. **Red, struck-through** rows just closed.
-- The **Details** panel shows the full command line, how long it has been running, its working directory and its open connections.
+- The **Details** panel explains the selected port in plain sentences, then shows how long it has been running, its open connections, the full command and its folder.
 - The **Events** tab logs every listening port that opens or closes while portwatch is running.
 
 ### Stopping processes safely
@@ -80,7 +99,7 @@ cargo install --path . --force
 
 ### Permissions
 
-As a normal user, the Linux kernel only lets you see which process owns a port if it is **your own** process. Other ports still appear, but with `-` as the process (greyed out), and the header shows a warning. To see and manage everything:
+As a normal user, the Linux kernel only lets you see which process owns a port if it is **your own** process. Other ports still appear, but the process shows as `? needs sudo`, and the **Hidden** card counts them. To see and manage everything:
 
 ```bash
 sudo "$(which portwatch)"
