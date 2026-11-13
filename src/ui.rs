@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -20,7 +20,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let now = Instant::now();
     let area = frame.area();
 
-    let details_height = if app.tab == Tab::Events { 0 } else { 7 };
+    // Give the table the space on short terminals: the details panel
+    // shrinks, then disappears.
+    let details_height = match (app.tab, area.height) {
+        (Tab::Events, _) => 0,
+        (_, h) if h >= 30 => 7,
+        (_, h) if h >= 20 => 5,
+        _ => 0,
+    };
     let [header, body, details, footer] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
@@ -47,36 +54,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    // Top-right corner of the header: a short warning (the Details panel
+    // carries the full `sudo` hint) and the refresh state. Counts live in
+    // the tab labels, so the tab row below gets the full width.
     let hidden = hidden_owner_count(app);
-    let mut counts = vec![
-        Span::raw(format!("{} listening", app.tracker.listening_count())),
-        Span::raw(" · "),
-        Span::raw(format!("{} connections", app.tracker.connection_count())),
-        Span::raw(" · "),
-    ];
-    if app.paused {
-        counts.push(Span::styled("PAUSED", Style::new().yellow().bold()));
-    } else {
-        counts.push(Span::styled("⟳ 1s", Style::new().fg(DIM)));
+    let mut corner: Vec<Span> = Vec::new();
+    if let Some(err) = &app.scan_error {
+        corner.push(Span::styled(format!(" ⚠ scan failed: {err} "), Style::new().yellow()));
+    } else if hidden > 0 && !app.is_root {
+        corner.push(Span::styled(
+            format!(" ⚠ {hidden} hidden: needs sudo "),
+            Style::new().yellow(),
+        ));
     }
+    corner.push(if app.paused {
+        Span::styled(" PAUSED ", Style::new().yellow().bold())
+    } else {
+        Span::styled(" ⟳ 1s ", Style::new().fg(DIM))
+    });
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(" portwatch ".bold().cyan()))
-        .title(Line::from(counts).right_aligned());
-    let inner = block.inner(area);
+        .title(Line::from(corner).right_aligned());
+    let tabs_area = block.inner(area);
     frame.render_widget(block, area);
-
-    let warning = if hidden > 0 && !app.is_root {
-        format!("⚠ {hidden} ports hidden: run sudo \"$(which portwatch)\" to see owners")
-    } else if let Some(err) = &app.scan_error {
-        format!("⚠ scan failed: {err}")
-    } else {
-        String::new()
-    };
-    let warn_width = (warning.chars().count() as u16).min(inner.width.saturating_sub(30));
-    let [tabs_area, warn_area] =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(warn_width)]).areas(inner);
 
     let titles: Vec<String> = Tab::ALL
         .iter()
@@ -92,15 +94,6 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::new().cyan().bold().add_modifier(Modifier::UNDERLINED))
         .divider("│");
     frame.render_widget(tabs, tabs_area);
-
-    if warn_width > 0 {
-        frame.render_widget(
-            Paragraph::new(warning)
-                .style(Style::new().yellow())
-                .alignment(Alignment::Right),
-            warn_area,
-        );
-    }
 }
 
 /// Listening ports whose owner we could not determine.
@@ -173,14 +166,16 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect, now: Instant) {
     } else {
         (
             vec!["PROTO", "LOCAL", "REMOTE", "STATE", "PID", "PROCESS", "USER"],
+            // STATE is fixed at the longest common value ("Established")
+            // so it never gets squeezed to a letter on narrow terminals.
             vec![
                 Constraint::Length(5),
+                Constraint::Min(16),
                 Constraint::Min(18),
-                Constraint::Min(22),
-                Constraint::Length(12),
-                Constraint::Length(8),
-                Constraint::Min(12),
+                Constraint::Length(11),
+                Constraint::Length(7),
                 Constraint::Min(8),
+                Constraint::Min(6),
             ],
         )
     };
@@ -219,7 +214,7 @@ fn render_table(frame: &mut Frame, app: &mut App, area: Rect, now: Instant) {
         )
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD))
         .highlight_symbol("▶ ")
-        .column_spacing(2);
+        .column_spacing(if listening { 2 } else { 1 });
 
     // `rows` borrows `app`; its data is copied into `table_rows`, so the
     // borrow ends before we touch the table state.
@@ -532,7 +527,7 @@ mod tests {
         assert!(screen.contains("3000"));
         assert!(screen.contains("postgres"));
         assert!(screen.contains("quit"));
-        assert!(screen.contains("2 listening"));
+        assert!(screen.contains("Listening (2)"));
     }
 
     #[test]
@@ -571,6 +566,70 @@ mod tests {
             advice: Some(crate::inspect::Hint::Systemd("node-app.service".into()).advice()),
         });
         println!("{}", draw(&mut app, 110, 22));
+    }
+
+    /// A non-root app with one visible owner, one hidden owner and one
+    /// established connection (like a normal user's machine).
+    fn app_with_hidden_owner() -> App {
+        let mut app = App::new(false);
+        let mut hidden = entry(631, 3, "x", 1);
+        hidden.process = None;
+        let mut conn = entry(3000, 4, "node", 900_001);
+        conn.listening = false;
+        conn.state = "Established".into();
+        conn.remote = "10.20.30.40:55555".parse().unwrap();
+        app.tracker.update(
+            vec![entry(3000, 1, "node", 900_001), hidden, conn],
+            Instant::now(),
+            SystemTime::now(),
+        );
+        app.selected = app.visible().first().map(|r| r.entry.key());
+        app
+    }
+
+    #[test]
+    #[ignore]
+    fn print_narrow_screens() {
+        let mut app = app_with_hidden_owner();
+        for width in [80u16, 100] {
+            println!("--- {width} cols, Listening");
+            println!("{}", draw(&mut app, width, 24));
+        }
+        app.tab = Tab::Connections;
+        app.selected = None;
+        println!("--- 80 cols, Connections");
+        println!("{}", draw(&mut app, 80, 24));
+    }
+
+    #[test]
+    fn header_keeps_tabs_and_warning_visible_on_narrow_terminals() {
+        let mut app = app_with_hidden_owner();
+        for width in [80u16, 100, 140] {
+            let screen = draw(&mut app, width, 24);
+            let header: String = screen.lines().take(3).collect::<Vec<_>>().join("\n");
+            assert!(header.contains("3 Events"), "tabs cut off at {width} cols:\n{header}");
+            assert!(header.contains("1 hidden"), "warning missing at {width} cols:\n{header}");
+            assert!(header.contains("sudo"), "sudo hint missing at {width} cols:\n{header}");
+            assert!(screen.contains("3000"), "table rows missing at {width} cols");
+        }
+    }
+
+    #[test]
+    fn connections_tab_keeps_state_readable_at_80_columns() {
+        let mut app = app_with_hidden_owner();
+        app.tab = Tab::Connections;
+        app.selected = None;
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("Established"), "state squeezed:\n{screen}");
+        assert!(screen.contains("10.20.30.40:55555"), "remote cut off:\n{screen}");
+    }
+
+    #[test]
+    fn short_terminals_hide_the_details_panel_but_keep_rows() {
+        let mut app = app_with_hidden_owner();
+        let screen = draw(&mut app, 100, 14);
+        assert!(!screen.contains("Details"));
+        assert!(screen.contains("3000"));
     }
 
     #[test]

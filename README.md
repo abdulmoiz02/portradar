@@ -5,7 +5,7 @@ An interactive terminal dashboard for monitoring and managing the network ports 
 Type `portwatch` and it opens a full-screen dashboard (like `htop`, but for ports). Quit with `q` and you are back in your shell.
 
 ```
-╭ portwatch ──────────────────────────── 20 listening · 37 connections · ⟳ 1s ╮
+╭ portwatch ─────────────────────────────── ⚠ 17 hidden: needs sudo  ⟳ 1s ╮
 │ 1 Listening (20) │ 2 Connections (37) │ 3 Events (2)                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭ Listening · sort: port ▲ ────────────────────────────────────────────────────╮
