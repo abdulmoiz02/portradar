@@ -433,7 +433,7 @@ pub fn socket_line(s: &SocketFacts, host: Option<&str>) -> String {
     let remote = if s.listening { "-".to_string() } else { s.remote.clone() };
     let host = host.map(|h| format!("  ({h})")).unwrap_or_default();
     format!(
-        "{:<4} {:<11} {:<21} {:<21} {queues} inode {}{host}",
+        "{:<5} {:<11} {:<21} {:<21} {queues} inode {}{host}",
         s.protocol, s.state, s.local, remote, s.inode
     )
 }

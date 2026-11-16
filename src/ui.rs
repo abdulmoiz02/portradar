@@ -1280,7 +1280,7 @@ fn sockets_lines(app: &App, snap: &Snapshot, look: &Look) -> Vec<Line<'static>> 
     }
     let mut lines = vec![Line::styled(
         format!(
-            "{:<4} {:<11} {:<21} {:<21} QUEUES    INODE",
+            "{:<5} {:<11} {:<21} {:<21} QUEUES  INODE",
             "PROTO", "STATE", "LOCAL", "REMOTE"
         ),
         fg(t.dim).bold(),
@@ -2243,6 +2243,33 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn the_no_clipboard_message_is_fully_readable_at_80_columns() {
+        let mut app = app_inspecting_ourselves().with_copier(|_, tx| {
+            tx.send(crate::clip::CopyResult::NoTool).unwrap();
+        });
+        press(&mut app, ratatui::crossterm::event::KeyCode::Char('y'));
+        app.tick();
+        let screen = draw(&mut app, 80, 24);
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("may be ignored"), "{footer}");
+        assert!(footer.contains("Raw tab"), "{footer}");
+        assert!(footer.trim_end().ends_with("Raw tab"), "message must not be cut off: {footer}");
+    }
+
+    #[test]
+    fn socket_columns_line_up_under_their_headers() {
+        let mut app = app_inspecting_ourselves();
+        go_to(&mut app, '3');
+        let screen = draw(&mut app, 100, 24);
+        let header = screen.lines().find(|l| l.contains("PROTO")).unwrap();
+        let row = screen.lines().find(|l| l.contains("127.0.0.1:3000")).unwrap();
+        let col = |line: &str, needle: &str| line.find(needle).unwrap();
+        assert_eq!(col(header, "STATE"), col(row, "Listen"), "{header}\n{row}");
+        assert_eq!(col(header, "LOCAL"), col(row, "127.0.0.1:3000"), "{header}\n{row}");
+        assert_eq!(col(header, "REMOTE"), col(row, "-  "), "{header}\n{row}");
     }
 
     #[test]

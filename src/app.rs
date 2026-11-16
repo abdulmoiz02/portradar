@@ -366,8 +366,10 @@ impl App {
                     if let Some(json) = self.last_json.take() {
                         self.pending_osc52 = Some(clip::osc52(&json));
                     }
+                    // One short line: the footer is a single row, and this must
+                    // stay fully readable at 80 columns.
                     self.set_status(
-                        "No clipboard program found (sudo apt install wl-clipboard). I asked your terminal to copy it, but many terminals ignore that, so check before relying on it. The JSON is on the Raw tab",
+                        "No clipboard tool; asked terminal to copy (may be ignored). JSON: Raw tab",
                         false,
                     );
                 }
@@ -630,10 +632,16 @@ impl App {
                 None => old.clone(),
             }
         };
-        let snapshot = if fresh.exited && old.process.is_some() {
+        // A PID can be reused by a different program once the old one exits.
+        // If the name or start time changed, this is not the same program.
+        let reused = match (&old.process, &fresh.process) {
+            (Some(a), Some(b)) => a.name != b.name || a.started_at_unix != b.started_at_unix,
+            _ => false,
+        };
+        let snapshot = if (fresh.exited || reused) && old.process.is_some() {
             let mut kept = old;
             kept.exited = true;
-            kept.sockets = fresh.sockets;
+            kept.sockets = if reused { Vec::new() } else { fresh.sockets };
             kept
         } else {
             fresh
@@ -661,10 +669,13 @@ impl App {
             KeyCode::End => state.scroll = usize::MAX / 2, // the screen clamps it
             KeyCode::Char('y') => self.request_copy(&state.snapshot),
             KeyCode::Char('r') => self.request_resolve(&state.snapshot),
+            KeyCode::Char('v') if state.tab != InspectorTab::Env => {
+                self.set_status("v shows environment values: open the Env tab (5) first", false);
+            }
             KeyCode::Char('v') => {
                 state.reveal_env = !state.reveal_env;
                 let text = if state.reveal_env {
-                    "Environment values are visible now. They may contain passwords or keys (v hides them)"
+                    "Values visible (may hold passwords). v hides them"
                 } else {
                     "Environment values are hidden"
                 };
@@ -742,7 +753,7 @@ impl App {
             }
         });
         self.set_status(
-            format!("Looking up {count} address(es). This sends them to your DNS resolver; names appear in the Sockets tab"),
+            format!("Looking up {count} address(es): sent to your DNS resolver. See the Sockets tab"),
             false,
         );
     }
@@ -750,7 +761,7 @@ impl App {
     fn toggle_technical(&mut self) {
         self.technical = !self.technical;
         let text = if self.technical {
-            "Technical view: raw bind addresses, kernel state and inode (t again to go back)"
+            "Technical view: bind addresses, state, inode (t again to go back)"
         } else {
             "Simple view"
         };
@@ -975,7 +986,7 @@ impl App {
         }
         self.only_exposed = !self.only_exposed;
         let text = if self.only_exposed {
-            "Showing only ports that other devices on your network can reach (e again to undo)"
+            "Showing only ports other devices can reach (e again to undo)"
         } else {
             "Showing all ports"
         };
@@ -1848,7 +1859,7 @@ mod tests {
         app.tick();
         let status = app.status.as_ref().unwrap();
         assert!(!status.text.contains("Copied"), "{}", status.text);
-        assert!(status.text.contains("wl-clipboard"), "{}", status.text);
+        assert!(status.text.contains("may be ignored") && status.text.contains("Raw tab"), "{}", status.text);
         let osc = app.take_osc52().expect("escape code to send");
         assert!(osc.starts_with("\x1b]52;c;") && osc.ends_with('\x07'));
         assert!(app.take_osc52().is_none(), "sent only once");
@@ -1930,6 +1941,78 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         app.tick();
         assert_eq!(*calls.lock().unwrap(), 50);
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_mistaken_for_the_same_program() {
+        let mut child = crate::kill::spawn_sleeper();
+        let mut app = app_with(vec![listener(3000, 1, Some(("sleep", child.id())))]);
+        open_inspector_on_first_row(&mut app);
+        // Pretend the program we opened was a different, older one that used
+        // this PID: its start time no longer matches what is running now.
+        if let Mode::Inspector(state) = &mut app.mode {
+            state.snapshot.process.as_mut().unwrap().started_at_unix = Some(1_000);
+        }
+        app.refresh_inspector();
+        let state = inspector(&app);
+        assert!(state.snapshot.exited, "a different program on the same PID counts as exited");
+        assert_eq!(state.snapshot.process.as_ref().unwrap().started_at_unix, Some(1_000), "old data is kept");
+        assert!(state.snapshot.sockets.is_empty());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn v_only_reveals_on_the_env_tab() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('v'));
+        assert!(!inspector(&app).reveal_env);
+        assert!(app.status.as_ref().unwrap().text.contains("Env tab"));
+        press(&mut app, KeyCode::Char('5'));
+        press(&mut app, KeyCode::Char('v'));
+        assert!(inspector(&app).reveal_env);
+    }
+
+    #[test]
+    fn every_status_message_fits_an_80_column_footer() {
+        use crate::clip::CopyResult;
+        let mut app = app_with_connections(&["10.20.30.40:443"])
+            .with_copier(|_, tx| tx.send(CopyResult::NoTool).unwrap())
+            .with_resolver(|_| None);
+        let check = |app: &App, what: &str| {
+            let text = &app.status.as_ref().unwrap_or_else(|| panic!("no status after {what}")).text;
+            assert!(text.chars().count() <= 78, "{what}: {} chars: {text}", text.chars().count());
+        };
+        app.welcome();
+        check(&app, "welcome");
+        for (key, what) in [('p', "pause"), ('p', "resume"), ('m', "mine on"), ('m', "mine off"), ('t', "technical on"), ('t', "technical off")] {
+            press(&mut app, KeyCode::Char(key));
+            check(&app, what);
+        }
+        press(&mut app, KeyCode::Char('1'));
+        for (key, what) in [('e', "exposed on"), ('e', "exposed off"), ('h', "quiet on"), ('h', "quiet off")] {
+            press(&mut app, KeyCode::Char(key));
+            check(&app, what);
+        }
+        press(&mut app, KeyCode::Char('2'));
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('v'));
+        check(&app, "v on the wrong tab");
+        press(&mut app, KeyCode::Char('5'));
+        for what in ["reveal", "hide"] {
+            press(&mut app, KeyCode::Char('v'));
+            check(&app, what);
+        }
+        press(&mut app, KeyCode::Char('y'));
+        check(&app, "copying");
+        app.tick();
+        check(&app, "no clipboard tool");
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('r'));
+        check(&app, "looking up");
+        press(&mut app, KeyCode::Char('r'));
+        check(&app, "nothing new");
     }
 
     #[test]
