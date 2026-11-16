@@ -18,7 +18,9 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 
 use app::App;
@@ -138,10 +140,20 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
         terminal.draw(|frame| ui::render(frame, &mut app))?;
 
         if event::poll(POLL_EVERY)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
-                Event::Mouse(mouse) => app.handle_mouse(mouse),
-                _ => {}
+            // Take everything that is waiting before drawing again. Mouse
+            // capture reports every movement of the pointer, and drawing once
+            // per movement would make keypresses wait behind a queue of them.
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
+                    Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Moved) => {
+                        app.handle_mouse(mouse)
+                    }
+                    _ => {}
+                }
+                if app.should_quit || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
 

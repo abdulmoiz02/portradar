@@ -230,7 +230,11 @@ impl App {
 
     /// One-time greeting in the footer for people opening it the first time.
     pub fn welcome(&mut self) {
-        self.set_status("Welcome! ? shows all keys · / searches · k stops a program", false);
+        let dot = self.look.glyphs.dot;
+        self.set_status(
+            format!("Welcome! ? shows all keys {dot} / searches {dot} k stops a program"),
+            false,
+        );
     }
 
     // ---- data -------------------------------------------------------

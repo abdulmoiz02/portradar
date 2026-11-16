@@ -686,7 +686,7 @@ fn render_footer(frame: &mut Frame, app: &App, look: &Look, area: Rect, now: Ins
             Span::raw(" "),
             Span::raw(app.filter.clone()),
             Span::styled(look.glyphs.cursor, fg(t.warn)),
-            Span::styled("   Enter keep · Esc clear", fg(t.dim)),
+            Span::styled(format!("   Enter keep {} Esc clear", look.glyphs.dot), fg(t.dim)),
         ])
     } else if let Some(status) = app.status_text(now) {
         let color = if status.is_error { t.bad } else { t.good };
@@ -796,19 +796,25 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         ("p".into(), "pause or resume refreshing"),
         (":  or  Ctrl+P".into(), "command menu: find any action by name"),
         ("q  /  Ctrl+C".into(), "quit"),
-        ("Mouse".into(), "click tabs and rows, wheel scrolls (hold Shift to select text)"),
+        ("Mouse".into(), "click tabs/rows, wheel scrolls; Shift+drag selects text"),
     ];
-    let mut lines = vec![
-        Line::styled("Green rows just opened. Red rows just closed.", fg(t.dim)),
-        Line::from(""),
-    ];
+    // On a standard 80x24 terminal the help has to fit in 22 rows, so the
+    // intro and the spacing lines are dropped on short screens.
+    let roomy = area.height >= 30;
+    let mut lines = Vec::new();
+    if roomy {
+        lines.push(Line::styled("Green rows just opened. Red rows just closed.", fg(t.dim)));
+        lines.push(Line::from(""));
+    }
     for (key, what) in keys {
         lines.push(Line::from(vec![
-            Span::styled(format!("{key:<22}"), fg(t.accent).bold()),
+            Span::styled(format!("{key:<20}"), fg(t.accent).bold()),
             Span::raw(what),
         ]));
     }
-    lines.push(Line::from(""));
+    if roomy {
+        lines.push(Line::from(""));
+    }
     lines.push(Line::styled("What the columns and marks mean", Style::new().bold()));
     lines.push(Line::from(vec![
         Span::styled("SERVICE  ", fg(t.accent).bold()),
@@ -817,7 +823,10 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("ACCESS   ", fg(t.accent).bold()),
         Span::styled(format!("{} this PC only", g.local), fg(t.good)),
-        Span::raw(": nothing else can connect  "),
+        Span::raw(": nothing else can connect"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("         "),
         Span::styled(format!("{} whole network", g.whole), fg(t.warn)),
         Span::raw(": other devices can try"),
     ]));
@@ -834,10 +843,12 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         Span::styled("UP       ", fg(t.accent).bold()),
         Span::raw("how long the program has been running"),
     ]));
-    lines.push(Line::from(""));
+    if roomy {
+        lines.push(Line::from(""));
+    }
     lines.push(Line::styled("Press any key to close", fg(t.dim)));
 
-    let popup = centered(area, 88, lines.len() as u16 + 2);
+    let popup = centered(area, 80, lines.len() as u16 + 2);
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -1263,6 +1274,18 @@ mod tests {
             let bad: Vec<char> = screen.chars().filter(|c| !c.is_ascii()).collect();
             assert!(bad.is_empty(), "non-ASCII {bad:?} at {w}x{h}:\n{screen}");
         }
+        // The welcome message and the search footer too.
+        app.welcome();
+        let screen = draw(&mut app, 110, 30);
+        assert!(screen.is_ascii(), "welcome is not ASCII:\n{screen}");
+        app.mode = Mode::Filter;
+        app.filter = "node".into();
+        let screen = draw(&mut app, 110, 30);
+        assert!(screen.contains("Enter keep"), "{screen}");
+        assert!(screen.is_ascii(), "search footer is not ASCII:\n{screen}");
+        app.mode = Mode::Normal;
+        app.filter.clear();
+
         // The popups too.
         app.mode = Mode::Help;
         let screen = draw(&mut app, 110, 40);
@@ -1279,6 +1302,51 @@ mod tests {
         let screen = draw(&mut app, 110, 30);
         assert!(screen.is_ascii(), "popup is not ASCII:\n{screen}");
         assert!(screen.contains("Free this port"));
+    }
+
+    #[test]
+    fn every_popup_fits_a_standard_80x24_terminal() {
+        let mut app = app();
+
+        app.mode = Mode::Help;
+        let screen = draw(&mut app, 80, 24);
+        for expected in [
+            "Help",
+            "Mouse",
+            "Shift+drag selects text",
+            "free the port",
+            "this PC only",
+            "other devices",
+            "worth a look",
+            "how long the program",
+            "Press any key to close",
+        ] {
+            assert!(screen.contains(expected), "help at 80x24 is missing {expected:?}:\n{screen}");
+        }
+
+        app.mode = Mode::ConfirmKill(KillRequest {
+            pid: 1234,
+            name: "node".into(),
+            protocol: Protocol::Tcp,
+            port: 3000,
+            force: true,
+            free: false,
+            advice: Some("Managed by systemd (node-app.service); it may restart after a kill.".into()),
+        });
+        let screen = draw(&mut app, 80, 24);
+        for expected in ["Confirm", "SIGKILL", "systemd", "Yes, stop it", "Cancel"] {
+            assert!(screen.contains(expected), "popup at 80x24 is missing {expected:?}:\n{screen}");
+        }
+
+        app.mode = Mode::Palette(PaletteState::default());
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("Command menu") && screen.contains("Enter run"), "{screen}");
+
+        for step in 0..TOUR_STEPS {
+            app.mode = Mode::Tour(step);
+            let screen = draw(&mut app, 80, 24);
+            assert!(screen.contains(&format!("Step {} of {TOUR_STEPS}", step + 1)), "{screen}");
+        }
     }
 
     #[test]

@@ -90,7 +90,7 @@ The first time you start it, a three-page tour explains what a port is and how t
 The mouse works too: click a tab or a row, scroll with the wheel. (While the mouse is captured, hold `Shift` to select text with the terminal. Turn it off with `mouse = false` in the settings file.)
 
 - **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see.
-- **One row per program per port.** If a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Different programs are never merged. `portwatch list` still shows every socket.
+- **One row per program per port.** If a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Programs you can see are never merged with each other (different PIDs stay separate). Hidden owners are grouped by account and port. `portwatch list` still shows every socket.
 - **The mark in the first column** is a quick opinion, with the reason in the Details panel:
   - `✓` looks normal (dim)
   - `★` a development server you started
