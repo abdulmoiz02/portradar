@@ -2221,7 +2221,8 @@ mod tests {
         app.rescan();
         assert_eq!(app.history.listening.len(), 2);
         assert_eq!(app.history.connections.len(), 2);
-        assert_eq!(app.history.listening[0] as usize, app.tracker.listening_count());
+        // The latest point is what the cards show right now.
+        assert_eq!(*app.history.listening.back().unwrap() as usize, app.tracker.listening_count());
     }
 
     #[test]

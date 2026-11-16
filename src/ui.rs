@@ -19,7 +19,7 @@ use crate::confetti;
 use crate::model::{EventKind, Group, RowState};
 use crate::palette;
 use crate::radar::{self, Blip, Mark};
-use crate::spark::sparkline;
+use crate::spark::{compress, sparkline};
 use crate::tips;
 use crate::services::{Access, service_name};
 use crate::theme::Look;
@@ -171,7 +171,9 @@ fn render_cards(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
         let room = (rect.width as usize).saturating_sub(2 + digits.chars().count() + 2);
         let mut headline = vec![Span::styled(digits, fg(color).bold())];
         if room >= 4 {
-            let graph = sparkline(&history, room.min(14), &look.glyphs.spark);
+            // All of the history (about a minute), squeezed into the room.
+            let columns = room.min(14);
+            let graph = sparkline(&compress(&history, columns), columns, &look.glyphs.spark);
             headline.push(Span::raw("  "));
             headline.push(Span::styled(graph, fg(t.subtle)));
         }
@@ -720,9 +722,15 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             keys.push(("e".into(), "Exposed", app.only_exposed));
             keys.push(("m".into(), "Mine", app.only_mine));
             keys.push(("h".into(), "Quiet", app.hide_noise));
-            keys.push(("t".into(), "Tech", app.technical));
+            // Sorting and the technical table only change the table, so the
+            // Radar tab does not offer them.
+            if app.tab == Tab::Listening {
+                keys.push(("t".into(), "Tech", app.technical));
+            }
             keys.push((tabs, "Tabs", false));
-            keys.push(("s".into(), "Sort", false));
+            if app.tab == Tab::Listening {
+                keys.push(("s".into(), "Sort", false));
+            }
             keys.push(("p".into(), "Pause", app.paused));
             keys.push(("T".into(), "Theme", false));
             keys
@@ -2014,6 +2022,29 @@ mod tests {
         let events = draw(&mut app, 140, 26);
         let footer = events.lines().last().unwrap().to_string();
         assert!(!footer.contains("Stop") && footer.contains("Scroll"), "{footer}");
+    }
+
+    #[test]
+    fn the_radar_footer_leaves_out_keys_that_only_change_the_table() {
+        let mut app = app_with_many_ports();
+        let footer = draw(&mut app, 220, 30).lines().last().unwrap().to_string();
+        assert!(footer.contains("Theme") && footer.contains("Inspect"), "{footer}");
+        assert!(!footer.contains("Sort") && !footer.contains("Tech"), "{footer}");
+        app.tab = Tab::Listening;
+        let footer = draw(&mut app, 220, 30).lines().last().unwrap().to_string();
+        assert!(footer.contains("Sort") && footer.contains("Tech"), "{footer}");
+    }
+
+    #[test]
+    fn a_long_history_is_squeezed_into_the_card_so_a_spike_is_still_visible() {
+        let mut app = app();
+        for i in 0..60 {
+            app.history.record(if i == 3 { 20 } else { 2 }, 1, 1, 0);
+        }
+        let screen = draw(&mut app, 100, 30);
+        let card_row = screen.lines().nth(2).unwrap();
+        let first_card: String = card_row.chars().take(26).collect();
+        assert!(first_card.contains('\u{2588}'), "the spike (tallest bar) is visible: {first_card}");
     }
 
     #[test]

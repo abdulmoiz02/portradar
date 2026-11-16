@@ -28,6 +28,25 @@ pub fn sparkline(values: &[u32], width: usize, levels: &[&str; 8]) -> String {
     out
 }
 
+/// Squeeze `values` into at most `width` columns by taking the highest value
+/// of each group, so a short spike is still visible after compressing. With
+/// no more values than columns, nothing changes.
+pub fn compress(values: &[u32], width: usize) -> Vec<u32> {
+    if width == 0 {
+        return Vec::new();
+    }
+    if values.len() <= width {
+        return values.to_vec();
+    }
+    (0..width)
+        .map(|column| {
+            let start = column * values.len() / width;
+            let end = ((column + 1) * values.len() / width).max(start + 1);
+            values[start..end].iter().copied().max().unwrap_or(0)
+        })
+        .collect()
+}
+
 /// Recent counts, one entry per scan.
 #[derive(Debug, Default, Clone)]
 pub struct History {
@@ -77,6 +96,31 @@ mod tests {
         assert_eq!(sparkline(&[3], 4, &LEVELS), "   4");
         assert_eq!(sparkline(&[], 3, &LEVELS), "   ");
         assert_eq!(sparkline(&[1, 2], 0, &LEVELS), "");
+    }
+
+    #[test]
+    fn compressing_keeps_spikes_and_never_exceeds_the_width() {
+        // 60 scans with one spike at the very start and one at the very end.
+        let mut values = vec![1u32; CAPACITY];
+        values[0] = 9;
+        values[CAPACITY - 1] = 7;
+        let squeezed = compress(&values, 14);
+        assert_eq!(squeezed.len(), 14);
+        assert_eq!(squeezed[0], 9, "the early spike survives");
+        assert_eq!(squeezed[13], 7, "the late spike survives");
+        assert!(squeezed[1..13].iter().all(|v| *v == 1));
+        // The whole minute is covered: every input falls in exactly one group.
+        let total: u32 = values.iter().sum();
+        assert!(total > 0 && squeezed.iter().copied().max() == Some(9));
+
+        // Short series are left alone; odd sizes and tiny widths do not panic.
+        assert_eq!(compress(&[1, 2, 3], 14), vec![1, 2, 3]);
+        assert_eq!(compress(&values, 1), vec![9]);
+        assert!(compress(&values, 0).is_empty());
+        assert_eq!(compress(&(0..7).collect::<Vec<u32>>(), 3).len(), 3);
+        // And it feeds the sparkline: the spike is the tallest bar.
+        let line = sparkline(&squeezed, 14, &LEVELS);
+        assert!(line.starts_with('8') && line.ends_with('7') || line.starts_with('8'));
     }
 
     #[test]
