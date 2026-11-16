@@ -333,7 +333,7 @@ impl App {
 
     /// The radar sweep angle in radians, or `None` when it should not move.
     pub fn sweep_angle(&self) -> Option<f32> {
-        const PERIOD_SECS: f32 = 6.0;
+        use crate::radar::SWEEP_PERIOD_SECS as PERIOD_SECS;
         if !self.animations || self.paused {
             return None;
         }
@@ -365,7 +365,7 @@ impl App {
 
     fn cycle_theme(&mut self) {
         let next = self.look.name.next();
-        self.look = Look::new(next, self.look.ascii);
+        self.look = self.look.with_theme(next);
         self.set_status(
             format!("Theme: {0}. To keep it, set theme = \"{0}\" in the settings file", next.label()),
             false,

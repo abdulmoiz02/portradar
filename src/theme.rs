@@ -87,6 +87,11 @@ pub struct Theme {
     pub chip_fg: Color,
     pub select_bg: Color,
     pub select_fg: Color,
+    /// Background washes for the radar's fading sweep, faint to strong.
+    pub wake: [Color; 3],
+    /// The same glow as a smooth gradient (faintest, strongest) for terminals
+    /// that support 24-bit colour.
+    pub wake_rgb: [(u8, u8, u8); 2],
 }
 
 impl Theme {
@@ -106,6 +111,8 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
+                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(28)],
+                wake_rgb: [(22, 48, 34), (40, 92, 64)],
             },
             ThemeName::Light => Theme {
                 accent: Color::Blue,
@@ -121,6 +128,8 @@ impl Theme {
                 chip_fg: Color::Black,
                 select_bg: Color::Indexed(153),
                 select_fg: Color::Black,
+                wake: [Color::Indexed(194), Color::Indexed(157), Color::Indexed(120)],
+                wake_rgb: [(228, 246, 232), (186, 228, 198)],
             },
             ThemeName::Nord => Theme {
                 accent: Color::Indexed(110),
@@ -136,6 +145,8 @@ impl Theme {
                 chip_fg: Color::Indexed(253),
                 select_bg: Color::Indexed(60),
                 select_fg: Color::Indexed(255),
+                wake: [Color::Indexed(23), Color::Indexed(23), Color::Indexed(30)],
+                wake_rgb: [(26, 50, 58), (40, 88, 100)],
             },
             ThemeName::Dracula => Theme {
                 accent: Color::Indexed(141),
@@ -151,6 +162,8 @@ impl Theme {
                 chip_fg: Color::Indexed(255),
                 select_bg: Color::Indexed(60),
                 select_fg: Color::Indexed(255),
+                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(54)],
+                wake_rgb: [(44, 30, 64), (84, 52, 124)],
             },
             ThemeName::Cyberpunk => Theme {
                 accent: Color::Indexed(201),
@@ -166,6 +179,8 @@ impl Theme {
                 chip_fg: Color::Indexed(219),
                 select_bg: Color::Indexed(54),
                 select_fg: Color::Indexed(231),
+                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(89)],
+                wake_rgb: [(58, 22, 70), (104, 30, 104)],
             },
             ThemeName::Matrix => Theme {
                 accent: Color::Indexed(46),
@@ -181,6 +196,8 @@ impl Theme {
                 chip_fg: Color::Indexed(46),
                 select_bg: Color::Indexed(22),
                 select_fg: Color::Indexed(82),
+                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(28)],
+                wake_rgb: [(8, 46, 18), (18, 92, 34)],
             },
             ThemeName::ColorBlind => Theme {
                 accent: Color::Indexed(75),
@@ -196,6 +213,8 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
+                wake: [Color::Indexed(17), Color::Indexed(17), Color::Indexed(18)],
+                wake_rgb: [(20, 36, 66), (30, 62, 112)],
             },
             ThemeName::Mono => Theme {
                 accent: Color::White,
@@ -211,6 +230,8 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
+                wake: [Color::Indexed(236), Color::Indexed(238), Color::Indexed(240)],
+                wake_rgb: [(44, 44, 44), (78, 78, 78)],
             },
         }
     }
@@ -311,6 +332,8 @@ pub struct Look {
     pub theme: Theme,
     pub glyphs: Glyphs,
     pub ascii: bool,
+    /// The terminal can show 24-bit colours (smooth gradients).
+    pub truecolor: bool,
 }
 
 impl Look {
@@ -320,6 +343,30 @@ impl Look {
             theme: Theme::named(theme),
             glyphs: if ascii { Glyphs::ASCII } else { Glyphs::UNICODE },
             ascii,
+            truecolor: false,
+        }
+    }
+
+    /// The same look with another theme (keeps ASCII mode and colour depth).
+    pub fn with_theme(&self, theme: ThemeName) -> Look {
+        Look { truecolor: self.truecolor, ..Look::new(theme, self.ascii) }
+    }
+
+    /// The background for a cell the sweep's glow reaches: `level` runs from
+    /// 1 (faint) to `WAKE_STEPS` (strongest); 0 means no glow.
+    pub fn wake_color(&self, level: u8) -> Option<Color> {
+        use crate::radar::WAKE_STEPS;
+        if level == 0 {
+            return None;
+        }
+        let level = level.min(WAKE_STEPS);
+        if self.truecolor {
+            let k = f32::from(level - 1) / f32::from(WAKE_STEPS - 1);
+            let [(r0, g0, b0), (r1, g1, b1)] = self.theme.wake_rgb;
+            let lerp = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * k).round() as u8;
+            Some(Color::Rgb(lerp(r0, r1), lerp(g0, g1), lerp(b0, b1)))
+        } else {
+            Some(self.theme.wake[usize::from((level - 1) * 3 / WAKE_STEPS).min(2)])
         }
     }
 
@@ -375,6 +422,27 @@ mod tests {
         assert_eq!(seen.len(), ThemeName::ALL.len());
         assert_eq!(ThemeName::parse("hacker"), Some(ThemeName::Matrix));
         assert_eq!(ThemeName::parse("Colour-Blind"), Some(ThemeName::ColorBlind));
+    }
+
+    #[test]
+    fn the_wake_has_a_colour_for_every_strength_in_both_colour_depths() {
+        use crate::radar::WAKE_STEPS;
+        for theme in ThemeName::ALL {
+            for truecolor in [false, true] {
+                let look = Look { truecolor, ..Look::new(theme, false) };
+                assert_eq!(look.wake_color(0), None);
+                let colours: Vec<Color> = (1..=WAKE_STEPS).map(|l| look.wake_color(l).unwrap()).collect();
+                assert_eq!(colours.len(), usize::from(WAKE_STEPS));
+                if truecolor {
+                    assert_ne!(colours[0], colours[colours.len() - 1], "{theme:?} has a gradient");
+                } else {
+                    assert!(colours.iter().all(|c| matches!(c, Color::Indexed(_))), "{theme:?} stays in 256 colours");
+                }
+            }
+            assert_eq!(Look::new(theme, false).with_theme(ThemeName::Nord).name, ThemeName::Nord);
+        }
+        let look = Look { truecolor: true, ..Look::new(ThemeName::Default, true) };
+        assert!(look.with_theme(ThemeName::Dracula).truecolor && look.with_theme(ThemeName::Dracula).ascii);
     }
 
     #[test]

@@ -135,7 +135,13 @@ The **technical table** (`t`) swaps the friendly columns for the raw facts: the 
 
 ### The fun parts
 
-- **Radar** (`4`): your listening ports as dots on three rings. The centre is this computer; the inner ring is ports only this computer can reach, the middle ring one network, the outer ring the whole network, so the more open a port is, the further out it sits. A sweep goes round every six seconds and flashes the dots it passes, and a port that just opened sends out a ripple. Each dot keeps its place unless another port in the same ring needs the same spot (positions are worked out from the port and program, never from the sort order), the selected port is always labelled, and `↑` `↓`, the filters, `k`, `f`, `o` and `Enter` work as on the Listening tab (sorting and the technical table only apply to the table). If the rings are too full for every dot, `+N not shown` says so.
+- **Radar** (`4`): your listening ports as dots on three rings, drawn as a phosphor scope with smooth Braille lines.
+  - The centre is this computer. The inner ring is ports only this computer can reach, the middle ring one network, the outer ring the whole network, so the more open a port is, the further out it sits. The rings are named on the screen.
+  - A bright beam sweeps round every six seconds and leaves a soft glow behind it. Dots it passes flash, send out a small ring, and fade slowly. Quiet inner ports are labelled only for a few seconds after the beam passes; ports open to a network and the selected port (marked with rotating brackets) are always labelled. A port that just opened sends out a ripple.
+  - On windows about 92 columns wide or more there are two side panels: **Range** (how many ports sit in each ring, and what the rings mean) on the left, and **Open to the network** (worrying ports first) plus a **Selected** card on the right. Narrower windows get the scope alone.
+  - Each dot keeps its place unless another port in the same ring needs the same spot (positions are worked out from the port and program, never from the sort order). If the rings are too full, `+N not shown` says so.
+  - `↑` `↓`, the filters, `k`, `f`, `o` and `Enter` work as on the Listening tab (sorting and the technical table only apply to the table).
+  - With `ascii = true` the radar is drawn with plain characters instead of Braille. With 24-bit colour (most modern terminals; portwatch checks `COLORTERM`) the sweep's glow is a smooth gradient, otherwise it uses a few 256-colour steps. `truecolor = false` turns the gradient off.
 - **History graphs** on the summary cards: the last 60 refreshes of each count (a minute at the default rate), squeezed to fit the card by keeping the highest value of each group, so a short spike still shows.
 - **Confetti** when you free a port with `f` and portwatch has checked that the port really is free. Plain `k` never celebrates.
 - **Did you know?** A line under the table with a fact about the selected port (SSH, DNS, MySQL, Redis and so on, kept to default ports and what the protocol does), or a tip about portwatch that changes every 15 seconds.
@@ -164,6 +170,7 @@ ascii = false           # true = plain ASCII symbols and borders
 mouse = true            # click tabs and rows, scroll with the wheel
 animations = true       # false = no radar sweep, ripples or confetti
 tips = true             # false = hide the "Did you know?" line
+truecolor = true        # false = never use smooth 24-bit colour gradients
 ```
 
 portwatch only ever reads this file. If it has a mistake, portwatch shows a message in the footer and uses the defaults. The only file portwatch writes is a tiny marker (`~/.local/state/portwatch/tour-seen`) so the tour is shown once, and never when run as root.
@@ -185,7 +192,7 @@ sudo "$(which portwatch)"
 3. **Inspect** (`src/inspect.rs`, `src/inspector.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd. The Inspector collects everything in `src/inspector.rs` (process facts, sockets with queue sizes, origin, environment kept apart, raw `/proc` text) and `src/clip.rs` handles copying.
 4. **Draw** (`src/ui.rs`, `src/app.rs`): a loop checks the keyboard every 100 ms (so keys feel instant), rescans every second, and redraws with [ratatui](https://ratatui.rs).
 5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
-6. **Fun layer:** `src/radar.rs` lays out the radar as a pure function (same ports, same cells; time is passed in), `src/confetti.rs` and `src/spark.rs` are pure too, `src/tips.rs` holds the facts.
+6. **Fun layer:** `src/radar.rs` lays out the radar as a pure function (same ports, same cells and Braille dots; time is passed in), `src/confetti.rs` and `src/spark.rs` are pure too, `src/tips.rs` holds the facts.
 7. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
 
 ## Development

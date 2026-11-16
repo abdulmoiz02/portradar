@@ -1479,15 +1479,10 @@ fn tip_line(app: &App, look: &Look, width: u16, about_selection: bool) -> Option
 }
 
 /// One dot per listening row, with a stable identity so it never moves.
-fn radar_blips(app: &App, now: Instant) -> Vec<Blip> {
-    app.visible()
+fn radar_blips(groups: &[Group<'_>], app: &App, now: Instant) -> Vec<Blip> {
+    groups
         .iter()
         .map(|grp| {
-            let band = match grp.access() {
-                Access::ThisPcOnly => 0,
-                Access::OneNetwork => 1,
-                Access::WholeNetwork => 2,
-            };
             let owner: Vec<u8> = match grp.process() {
                 Some(p) => p.pid.to_le_bytes().to_vec(),
                 None => grp.user().as_bytes().to_vec(),
@@ -1507,7 +1502,7 @@ fn radar_blips(app: &App, now: Instant) -> Vec<Blip> {
                     &grp.port().to_le_bytes(),
                     &owner,
                 ]),
-                band,
+                band: band_of(grp.access()),
                 label: grp.port().to_string(),
                 level: verdict(grp, &app.me).level,
                 state: grp.state(now),
@@ -1518,17 +1513,28 @@ fn radar_blips(app: &App, now: Instant) -> Vec<Blip> {
         .collect()
 }
 
+fn band_of(access: Access) -> usize {
+    match access {
+        Access::ThisPcOnly => 0,
+        Access::OneNetwork => 1,
+        Access::WholeNetwork => 2,
+    }
+}
+
+/// Smallest width at which the radar gets its side panels.
+const PANELS_MIN_WIDTH: u16 = 92;
+/// Width of the scope in the middle when the panels are shown.
+const SCOPE_MIN_WIDTH: u16 = 46;
+
 fn render_radar(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: Instant) {
     let t = &look.theme;
     let g = &look.glyphs;
-    let blips = radar_blips(app, now);
+    let groups = app.visible();
+    let blips = radar_blips(&groups, app, now);
 
     let mut title = vec![
         Span::styled(" Radar ", fg(t.accent).bold()),
-        Span::styled(
-            format!("{} further out = more open to others ", g.dot),
-            fg(t.dim),
-        ),
+        Span::styled(format!("{} further out = more open to others ", g.dot), fg(t.dim)),
     ];
     for name in app.active_filters() {
         title.push(Span::styled(format!("{} {name} ", g.dot), fg(t.warn)));
@@ -1538,87 +1544,297 @@ fn render_radar(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
         block = block.title_bottom(tip);
     }
     let inner = block.inner(area);
-    let radar = radar::layout(inner.width, inner.height, &blips, app.sweep_angle());
-    if radar.not_shown > 0 {
+
+    // Wide windows get a panel on each side; narrower ones just the scope.
+    let panels = inner.width >= PANELS_MIN_WIDTH && inner.height >= 12;
+    let side = if panels {
+        ((inner.width - SCOPE_MIN_WIDTH) / 2).clamp(24, 34)
+    } else {
+        0
+    };
+    let scope_area = Rect::new(
+        inner.x + side,
+        inner.y,
+        inner.width.saturating_sub(2 * side),
+        inner.height,
+    );
+
+    let animating = app.animations && !app.paused;
+    let seconds = app.elapsed().as_secs_f32();
+    let motion = radar::Motion {
+        sweep: app.sweep_angle(),
+        spin: if animating { seconds * 1.2 } else { 0.0 },
+        pulse: if animating { 3.0 + 1.5 * (seconds * 2.4).sin() } else { 3.0 },
+    };
+    let scope = if look.ascii {
+        radar::layout(scope_area.width, scope_area.height, &blips, motion.sweep)
+    } else {
+        radar::layout_scope(scope_area.width, scope_area.height, &blips, motion)
+    };
+    if scope.not_shown > 0 {
         block = block.title_bottom(
-            Line::styled(format!(" +{} not shown ", radar.not_shown), fg(t.warn)).right_aligned(),
+            Line::styled(format!(" +{} not shown ", scope.not_shown), fg(t.warn)).right_aligned(),
         );
     }
 
-    let lines: Vec<Line<'static>> = if radar.too_small {
-        vec![Line::styled(
-            "Make the window larger to see the radar.",
-            fg(t.dim),
-        )]
-    } else if blips.is_empty() {
-        let mut lines = radar_lines(&radar, look);
-        // Nothing to draw: say so in the middle of the empty rings.
-        if let Some(mid) = lines.get_mut(radar.height as usize / 2 + 2) {
+    let lines: Vec<Line<'static>> = if scope.too_small {
+        vec![Line::styled("Make the window larger to see the radar.", fg(t.dim))]
+    } else {
+        let idle_dim = motion.sweep.is_some();
+        let mut lines = radar_lines(&scope, look, idle_dim);
+        if blips.is_empty()
+            && let Some(mid) = lines.get_mut(scope.height as usize / 2 + 2)
+        {
+            // Nothing to draw: say so in the middle of the empty rings.
             *mid = Line::styled("No ports match the filters.", fg(t.dim)).centered();
         }
         lines
-    } else {
-        radar_lines(&radar, look)
     };
+
+    let left_lines = panels.then(|| radar_left_lines(look, &groups, side as usize, inner.height as usize));
+    let right_lines =
+        panels.then(|| radar_right_lines(app, look, &groups, side as usize, inner.height as usize));
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), scope_area);
+    if let (Some(left), Some(right)) = (left_lines, right_lines) {
+        frame.render_widget(
+            Paragraph::new(left),
+            Rect::new(inner.x + 1, inner.y, side.saturating_sub(1), inner.height),
+        );
+        frame.render_widget(
+            Paragraph::new(right),
+            Rect::new(inner.x + inner.width - side + 1, inner.y, side.saturating_sub(2), inner.height),
+        );
+    }
 }
 
-/// Turn the pure radar layout into coloured text.
-fn radar_lines(radar: &radar::Radar, look: &Look) -> Vec<Line<'static>> {
+/// Cut a string to `width` characters.
+fn fit(text: &str, width: usize) -> String {
+    text.chars().take(width).collect()
+}
+
+/// The left panel: how many ports sit in each ring, and a reminder of what
+/// the rings and the main keys mean.
+fn radar_left_lines(look: &Look, groups: &[Group<'_>], width: usize, height: usize) -> Vec<Line<'static>> {
     let t = &look.theme;
     let g = &look.glyphs;
+    let mut counts = [0usize; 3];
+    for grp in groups.iter().filter(|grp| !grp.is_closed()) {
+        counts[band_of(grp.access())] += 1;
+    }
+    let inner = width.saturating_sub(2);
+    let roomy = height >= 17;
+    let mut lines = vec![Line::styled("RANGE", fg(t.accent).bold())];
+    lines.push(Line::from(""));
+    for (i, (symbol, name, color)) in [
+        (g.local, "THIS PC", t.good),
+        (g.one, "ONE NETWORK", t.warn),
+        (g.whole, "WHOLE NETWORK", t.bad),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let label = fit(&format!("{symbol} {name}"), inner.saturating_sub(3));
+        lines.push(Line::from(vec![
+            Span::styled(format!("{label:<w$}", w = inner.saturating_sub(3)), fg(color)),
+            Span::styled(format!("{:>3}", counts[i]), Style::new().bold()),
+        ]));
+        if roomy {
+            lines.push(Line::from(""));
+        }
+    }
+    lines.push(Line::from(""));
+    for text in ["inner ring: only this PC", "middle: one network", "outer: anyone nearby"] {
+        lines.push(Line::styled(fit(text, inner), fg(t.dim)));
+    }
+    lines.push(Line::from(""));
+    for text in ["Enter inspect  f free", "k stop  o open"] {
+        lines.push(Line::styled(fit(text, inner), fg(t.dim)));
+    }
+    lines
+}
+
+/// The right panel: what is open to the network, then the selected port.
+fn radar_right_lines(
+    app: &App,
+    look: &Look,
+    groups: &[Group<'_>],
+    width: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let mut lines = vec![Line::styled("OPEN TO THE NETWORK", fg(t.warn).bold()), Line::from("")];
+
+    let mut open: Vec<&Group<'_>> = groups
+        .iter()
+        .filter(|grp| grp.access().is_exposed() && !grp.is_closed())
+        .collect();
+    // Anything worth a look first, then by port.
+    open.sort_by_key(|grp| (verdict(grp, &app.me).level != Level::Check, grp.port()));
+
+    const CARD_LINES: usize = 6;
+    let room = height.saturating_sub(lines.len() + CARD_LINES + 1);
+    if open.is_empty() {
+        lines.push(Line::styled("nothing: all local only", fg(t.good)));
+    }
+    let shown = if open.len() > room { room.saturating_sub(1) } else { open.len() };
+    for grp in open.iter().take(shown) {
+        let check = verdict(grp, &app.me).level == Level::Check;
+        let program = grp.process().map(|p| p.name.as_str()).unwrap_or("?");
+        let text = fit(&format!("{:<6}{program}", grp.port()), width.saturating_sub(3));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", if check { g.warn } else { g.whole }),
+                fg(if check { t.warn } else { t.subtle }),
+            ),
+            Span::styled(text, fg(if check { t.warn } else { t.subtle })),
+        ]));
+    }
+    if open.len() > shown {
+        lines.push(Line::styled(format!("+{} more", open.len() - shown), fg(t.dim)));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled("SELECTED", Style::new().bold()));
+    match app.selected_group() {
+        Some(grp) => {
+            let service = service_name(grp.protocol(), grp.port())
+                .map(|s| format!("  {s}"))
+                .unwrap_or_default();
+            lines.push(Line::styled(
+                fit(&format!("{}/{}{service}", grp.port(), grp.protocol()), width.saturating_sub(1)),
+                Style::new().bold(),
+            ));
+            let program = grp.process().map(|p| p.name.clone()).unwrap_or_else(|| "? needs sudo".to_string());
+            lines.push(Line::styled(fit(&program, width.saturating_sub(1)), fg(t.subtle)));
+            let access = grp.access();
+            let color = if access.is_exposed() { t.warn } else { t.good };
+            lines.push(Line::styled(access.label().to_string(), fg(color)));
+            let v = verdict(&grp, &app.me);
+            let (glyph, color) = match v.level {
+                Level::Normal => (g.normal, t.good),
+                Level::Dev => (g.dev, t.accent),
+                Level::Check => (g.warn, t.warn),
+                Level::Unknown => ("?", t.dim),
+            };
+            lines.push(Line::styled(
+                fit(&format!("{glyph} {}", level_label(v.level).to_lowercase()), width.saturating_sub(1)),
+                fg(color),
+            ));
+        }
+        None => lines.push(Line::styled("nothing selected", fg(t.dim))),
+    }
+    lines
+}
+
+/// The style for each kind of Braille line work.
+fn shape_style(shape: radar::Shape, look: &Look) -> Style {
+    use radar::Shape;
+    let t = &look.theme;
+    match shape {
+        Shape::Ring(2) | Shape::Tick(true) | Shape::Pulse => fg(t.subtle),
+        Shape::Ring(_) | Shape::Tick(false) => fg(t.dim),
+        Shape::Bracket => fg(t.select_fg).bold(),
+        Shape::Ripple | Shape::Echo(1) => fg(t.good),
+        Shape::Echo(2) => fg(t.accent),
+        Shape::Echo(_) => fg(t.dim),
+        Shape::Beam => fg(t.accent).bold(),
+    }
+}
+
+/// What one mark of the radar looks like. `idle_dim` fades ports the sweep
+/// has not touched lately (only while the sweep runs).
+fn mark_span(mark: Mark, look: &Look, idle_dim: bool) -> Span<'static> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    match mark {
+        Mark::Empty => Span::raw(" "),
+        Mark::Ring(_) => Span::styled(g.radar_ring, fg(t.dim)),
+        Mark::RingLabel(ch) => Span::styled(ch.to_string(), fg(t.subtle)),
+        Mark::Sweep(3) => Span::styled(g.radar_sweep, fg(t.accent).bold()),
+        Mark::Sweep(2) => Span::styled(g.radar_sweep, fg(t.accent)),
+        Mark::Sweep(_) => Span::styled(g.radar_sweep, fg(t.dim)),
+        Mark::Center => Span::styled(g.radar_center, fg(t.accent).bold()),
+        Mark::Ripple => Span::styled(g.radar_ripple, fg(t.good)),
+        Mark::Label { ch, selected, tone } => {
+            if selected {
+                Span::styled(ch.to_string(), Style::new().fg(t.select_fg).bg(t.select_bg).bold())
+            } else {
+                let color = match tone {
+                    0 => t.dim,
+                    1 => t.subtle,
+                    2 => t.good,
+                    _ => t.warn,
+                };
+                Span::styled(ch.to_string(), fg(color))
+            }
+        }
+        Mark::Dot { level, state, hot, glow, selected } => {
+            let glyph = match level {
+                Level::Normal => g.local,
+                Level::Dev => g.dev,
+                Level::Check => g.warn,
+                Level::Unknown => g.one,
+            };
+            let color = match (state, level) {
+                (RowState::New, _) => t.good,
+                (RowState::Closed, _) => t.bad,
+                (_, Level::Normal) => t.good,
+                (_, Level::Dev) => t.accent,
+                (_, Level::Check) => t.warn,
+                (_, Level::Unknown) => t.subtle,
+            };
+            let mut style = if hot || glow >= 3 {
+                // Just hit by the sweep: flash it.
+                Style::new().fg(t.on_accent).bg(color).bold()
+            } else if glow == 2 {
+                fg(color).bold()
+            } else if glow == 1 || !idle_dim {
+                fg(color)
+            } else {
+                fg(color).add_modifier(Modifier::DIM)
+            };
+            if selected {
+                style = Style::new().fg(t.select_fg).bg(t.select_bg).bold();
+            }
+            if state == RowState::Closed {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            Span::styled(glyph, style)
+        }
+    }
+}
+
+/// Turn the pure radar layout into coloured text. Cells with a glow behind
+/// the sweep get a tinted background; Braille line work shows through
+/// wherever no dot or label sits.
+fn radar_lines(radar: &radar::Radar, look: &Look, idle_dim: bool) -> Vec<Line<'static>> {
     radar
         .cells
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(y, row)| {
             let spans: Vec<Span<'static>> = row
                 .iter()
-                .map(|mark| match *mark {
-                    Mark::Empty => Span::raw(" "),
-                    Mark::Ring(_) => Span::styled(g.radar_ring, fg(t.dim)),
-                    Mark::RingLabel(ch) => Span::styled(ch.to_string(), fg(t.subtle)),
-                    Mark::Sweep(3) => Span::styled(g.radar_sweep, fg(t.accent).bold()),
-                    Mark::Sweep(2) => Span::styled(g.radar_sweep, fg(t.accent)),
-                    Mark::Sweep(_) => Span::styled(g.radar_sweep, fg(t.dim)),
-                    Mark::Center => Span::styled(g.radar_center, fg(t.accent).bold()),
-                    Mark::Ripple => Span::styled(g.radar_ripple, fg(t.good)),
-                    Mark::Label { ch, selected } => {
-                        if selected {
-                            Span::styled(ch.to_string(), Style::new().fg(t.select_fg).bg(t.select_bg).bold())
-                        } else {
-                            Span::styled(ch.to_string(), fg(t.subtle))
-                        }
+                .enumerate()
+                .map(|(x, mark)| {
+                    let bits = radar.bits[y][x];
+                    let mut span = if *mark == Mark::Empty && bits != 0 {
+                        let glyph = char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ');
+                        let style = radar.shapes[y][x]
+                            .map(|s| shape_style(s, look))
+                            .unwrap_or_default();
+                        Span::styled(glyph.to_string(), style)
+                    } else {
+                        mark_span(*mark, look, idle_dim)
+                    };
+                    if span.style.bg.is_none()
+                        && let Some(color) = look.wake_color(radar.wake[y][x])
+                    {
+                        span.style = span.style.bg(color);
                     }
-                    Mark::Dot { level, state, hot, selected } => {
-                        let glyph = match level {
-                            Level::Normal => g.local,
-                            Level::Dev => g.dev,
-                            Level::Check => g.warn,
-                            Level::Unknown => g.one,
-                        };
-                        let color = match (state, level) {
-                            (RowState::New, _) => t.good,
-                            (RowState::Closed, _) => t.bad,
-                            (_, Level::Normal) => t.good,
-                            (_, Level::Dev) => t.accent,
-                            (_, Level::Check) => t.warn,
-                            (_, Level::Unknown) => t.subtle,
-                        };
-                        let mut style = if hot {
-                            // Just pinged by the sweep: flash it.
-                            Style::new().fg(t.on_accent).bg(color).bold()
-                        } else {
-                            fg(color).bold()
-                        };
-                        if selected {
-                            style = Style::new().fg(t.select_fg).bg(t.select_bg).bold();
-                        }
-                        if state == RowState::Closed {
-                            style = style.add_modifier(Modifier::CROSSED_OUT);
-                        }
-                        Span::styled(glyph, style)
-                    }
+                    span
                 })
                 .collect();
             Line::from(spans)
@@ -2390,9 +2606,12 @@ mod tests {
             .env("PORTWATCH_TEST_SECRET", "hunter2-super-secret")
             .spawn()
             .unwrap();
-        for _ in 0..200 {
+        // Wait until the new program has really started: its name has changed
+        // and its environment is readable (both appear a moment after the fork).
+        for _ in 0..300 {
             let comm = std::fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
-            if comm.trim_end() == "sleep" {
+            let env = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap_or_default();
+            if comm.trim_end() == "sleep" && !env.is_empty() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2600,7 +2819,9 @@ mod tests {
             let radar = radar_text(&screen);
             let normal = radar.matches('\u{25cf}').count();
             let unknown = radar.matches('\u{25c6}').count();
-            assert_eq!(normal, 12, "twelve local dots at {w}x{h}:\n{screen}");
+            // The side panels (wide windows) add one more filled circle: the legend.
+            let panels = usize::from(w >= 92);
+            assert_eq!(normal, 12 + panels, "twelve local dots at {w}x{h}:\n{screen}");
             assert!(unknown >= 3, "three exposed dots at {w}x{h}:\n{screen}");
         }
     }
@@ -2759,6 +2980,163 @@ mod tests {
         assert!(screen.contains("Port 5000 is free!"));
     }
 
+    fn draw_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn braille_cells(screen: &str) -> usize {
+        screen.chars().filter(|c| ('\u{2800}'..='\u{28ff}').contains(c)).count()
+    }
+
+    #[test]
+    fn the_radar_is_a_smooth_braille_scope_with_side_panels_on_wide_windows() {
+        for (w, h) in [(100u16, 30u16), (120, 38), (160, 44)] {
+            let mut app = app_with_many_ports();
+            let screen = draw(&mut app, w, h);
+            assert!(braille_cells(&screen) > 100, "smooth rings at {w}x{h}:\n{screen}");
+            for expected in ["RANGE", "THIS PC", "ONE NETWORK", "WHOLE NETWORK", "OPEN TO THE NETWORK", "SELECTED", "Enter inspect"] {
+                assert!(screen.contains(expected), "missing {expected:?} at {w}x{h}:\n{screen}");
+            }
+            assert!(!screen.contains('\u{2591}'), "no shaded blocks");
+        }
+        // On a narrower window the scope gets the whole panel and no side panels.
+        let mut app = app_with_many_ports();
+        let narrow = draw(&mut app, 80, 24);
+        assert!(braille_cells(&narrow) > 50, "{narrow}");
+        assert!(!narrow.contains("RANGE") && !narrow.contains("OPEN TO THE NETWORK"), "{narrow}");
+        assert!(narrow.contains("this PC") && narrow.contains("whole network"), "{narrow}");
+    }
+
+    #[test]
+    fn the_side_panels_count_the_rings_list_open_ports_and_describe_the_selection() {
+        let mut app = app_with_many_ports();
+        let screen = draw(&mut app, 120, 38);
+        // Twelve local ports and three open ones.
+        let range_lines: Vec<&str> = screen.lines().filter(|l| l.contains("THIS PC") || l.contains("ONE NETWORK") || l.contains("WHOLE NETWORK")).collect();
+        let numbers: Vec<String> = range_lines
+            .iter()
+            .map(|l| {
+                // The left panel is the first 34 columns inside the border.
+                let left: String = l.split("\u{2502}").nth(1).unwrap_or("").chars().take(34).collect();
+                left.split_whitespace().last().unwrap_or("").to_string()
+            })
+            .collect();
+        assert!(numbers.contains(&"12".to_string()), "12 in THIS PC: {numbers:?}\n{screen}");
+        assert!(numbers.contains(&"3".to_string()), "3 in WHOLE NETWORK: {numbers:?}\n{screen}");
+        for port in ["8443", "9000", "40000"] {
+            assert!(screen.contains(&format!("\u{25b2} {port}")), "open port {port} is listed:\n{screen}");
+        }
+        // The selected port (the first row, 6100) is described.
+        assert!(screen.contains("6100/tcp") && screen.contains("daemon") && screen.contains("this PC only"), "{screen}");
+    }
+
+    #[test]
+    fn the_open_to_the_network_list_puts_worrying_ports_first_and_says_when_it_is_cut() {
+        let mut app = new_app(false).with_motion(false, true);
+        let mut entries: Vec<PortEntry> = Vec::new();
+        for i in 0..14u16 {
+            entries.push(at(entry(20000 + i, 300 + i as u64, "svc", 700 + i as u32), "0.0.0.0"));
+        }
+        // A database open to the network is "worth a look" and must come first.
+        let mut redis = at(entry(6379, 99, "redis-server", 55), "0.0.0.0");
+        redis.user = "redis".into();
+        entries.push(redis);
+        app.tracker.update(entries, Instant::now(), SystemTime::now());
+        select_first(&mut app);
+        app.tab = Tab::Radar;
+        let screen = draw(&mut app, 120, 30);
+        let list: Vec<&str> = screen
+            .lines()
+            .filter_map(|l| l.split('\u{2502}').nth(1))
+            .filter(|l| l.contains("\u{26a0} 6379") || l.contains("\u{25b2} 20000"))
+            .collect();
+        let first_warning = screen.find("\u{26a0} 6379").expect("the database is listed");
+        let first_plain = screen.find("\u{25b2} 20000").expect("plain open ports are listed");
+        assert!(first_warning < first_plain, "worth-a-look first: {list:?}\n{screen}");
+        assert!(screen.contains("more"), "a cut list says how many are hidden:\n{screen}");
+    }
+
+    #[test]
+    fn the_radar_in_ascii_mode_has_the_panels_but_no_braille_or_unicode() {
+        let mut app = app_with_many_ports().with_look(Look::new(ThemeName::Default, true));
+        app.animations = true;
+        for secs in [0u64, 3] {
+            app.frozen_clock = Some(Duration::from_secs(secs));
+            let screen = draw(&mut app, 120, 38);
+            assert!(screen.is_ascii(), "{screen}");
+            assert!(screen.contains("RANGE") && screen.contains("OPEN TO THE NETWORK"), "{screen}");
+            assert_eq!(braille_cells(&screen), 0);
+        }
+    }
+
+    #[test]
+    fn the_sweep_glow_uses_smooth_colour_when_the_terminal_allows_it_and_256_colours_otherwise() {
+        use ratatui::style::Color;
+        let bgs = |app: &mut App| -> Vec<Color> {
+            draw_buffer(app, 120, 38).content().iter().map(|c| c.bg).collect()
+        };
+        let mut app = app_with_many_ports();
+        app.animations = true;
+        app.frozen_clock = Some(Duration::from_secs(2));
+
+        app.look.truecolor = true;
+        let rich = bgs(&mut app);
+        assert!(rich.iter().any(|c| matches!(c, Color::Rgb(..))), "smooth glow in true colour");
+
+        app.look.truecolor = false;
+        let plain = bgs(&mut app);
+        assert!(!plain.iter().any(|c| matches!(c, Color::Rgb(..))), "no 24-bit colour in 256-colour mode");
+        assert!(plain.iter().any(|c| matches!(c, Color::Indexed(22))), "the 256-colour ramp is used");
+
+        // No sweep, no glow.
+        app.animations = false;
+        app.look.truecolor = true;
+        assert!(!bgs(&mut app).iter().any(|c| matches!(c, Color::Rgb(..))));
+    }
+
+    #[test]
+    fn idle_dots_fade_only_while_the_sweep_runs_and_just_swept_dots_flash() {
+        use ratatui::style::Modifier;
+        let dim_dots = |app: &mut App| -> usize {
+            draw_buffer(app, 120, 38)
+                .content()
+                .iter()
+                .filter(|c| c.symbol() == "\u{25cf}" && c.modifier.contains(Modifier::DIM))
+                .count()
+        };
+        let mut app = app_with_many_ports();
+        assert_eq!(dim_dots(&mut app), 0, "a still radar does not dim anything");
+        app.animations = true;
+        app.frozen_clock = Some(Duration::from_secs(1));
+        assert!(dim_dots(&mut app) > 3, "while it sweeps, quiet ports fade");
+        // Over one full turn of the sweep, ports are flashed as a filled chip
+        // when it hits them.
+        let mut flashed = false;
+        for half_seconds in 0..12u64 {
+            app.frozen_clock = Some(Duration::from_millis(half_seconds * 500));
+            flashed |= draw_buffer(&mut app, 120, 38).content().iter().any(|c| {
+                c.symbol() == "\u{25cf}"
+                    && c.bg != ratatui::style::Color::Reset
+                    && c.modifier.contains(Modifier::BOLD)
+            });
+        }
+        assert!(flashed, "some port is flashed as the sweep passes it");
+    }
+
+    #[test]
+    fn the_theme_key_keeps_the_colour_depth_and_the_radar_survives_every_theme() {
+        let mut app = app_with_many_ports();
+        app.look.truecolor = true;
+        for _ in 0..ThemeName::ALL.len() {
+            press(&mut app, ratatui::crossterm::event::KeyCode::Char('T'));
+            assert!(app.look.truecolor);
+            let screen = draw(&mut app, 120, 38);
+            assert!(braille_cells(&screen) > 100);
+        }
+    }
+
     #[test]
     fn every_theme_renders() {
         for theme in ThemeName::ALL {
@@ -2796,6 +3174,105 @@ mod tests {
         assert!(screen.contains("What the columns and marks mean"));
         assert!(screen.contains("free the port"));
         assert!(screen.contains("Press any key to close"));
+    }
+
+    fn xterm_css(color: ratatui::style::Color, fallback: &str) -> String {
+        use ratatui::style::Color as C;
+        const BASE: [&str; 16] = [
+            "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+            "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+        ];
+        let indexed = |n: u8| -> String {
+            match n {
+                0..=15 => BASE[n as usize].to_string(),
+                16..=231 => {
+                    let i = n as usize - 16;
+                    let level = |v: usize| [0, 95, 135, 175, 215, 255][v];
+                    format!("#{:02x}{:02x}{:02x}", level(i / 36), level((i / 6) % 6), level(i % 6))
+                }
+                _ => {
+                    let g = 8 + 10 * (n as usize - 232);
+                    format!("#{g:02x}{g:02x}{g:02x}")
+                }
+            }
+        };
+        match color {
+            C::Reset => fallback.to_string(),
+            C::Black => indexed(0),
+            C::Red => indexed(1),
+            C::Green => indexed(2),
+            C::Yellow => indexed(3),
+            C::Blue => indexed(4),
+            C::Magenta => indexed(5),
+            C::Cyan => indexed(6),
+            C::Gray => indexed(7),
+            C::DarkGray => indexed(8),
+            C::LightRed => indexed(9),
+            C::LightGreen => indexed(10),
+            C::LightYellow => indexed(11),
+            C::LightBlue => indexed(12),
+            C::LightMagenta => indexed(13),
+            C::LightCyan => indexed(14),
+            C::White => indexed(15),
+            C::Indexed(n) => indexed(n),
+            C::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        }
+    }
+
+    /// The screen as an HTML page with the real colours, so the design can be
+    /// looked at in a browser. Written to `$PORTWATCH_HTML` when it is set.
+    fn screen_html(app: &mut App, width: u16, height: u16) -> String {
+        use ratatui::style::Modifier as M;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let (default_fg, default_bg) = ("#d0cfcc", "#300a24");
+        let mut out = String::from("<pre style=\"margin:0;padding:8px;background:#300a24;color:#d0cfcc;font:13px/1.18 'DejaVu Sans Mono',monospace;width:max-content\">");
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                let (mut fg, mut bg) = (xterm_css(cell.fg, default_fg), xterm_css(cell.bg, default_bg));
+                if cell.modifier.contains(M::REVERSED) {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let mut style = format!("color:{fg};background:{bg};");
+                if cell.modifier.contains(M::BOLD) {
+                    style.push_str("font-weight:700;");
+                }
+                if cell.modifier.contains(M::DIM) {
+                    style.push_str("opacity:.6;");
+                }
+                if cell.modifier.contains(M::CROSSED_OUT) {
+                    style.push_str("text-decoration:line-through;");
+                }
+                let symbol = cell.symbol().replace('&', "&amp;").replace('<', "&lt;");
+                out.push_str(&format!("<span style=\"{style}\">{symbol}</span>"));
+            }
+            out.push('\n');
+        }
+        out.push_str("</pre>");
+        out
+    }
+
+    /// `PORTWATCH_HTML=/path/file.html cargo test dump_radar_html -- --ignored`
+    #[test]
+    #[ignore]
+    fn dump_radar_html() {
+        let Some(path) = std::env::var_os("PORTWATCH_HTML") else {
+            return;
+        };
+        let mut page = String::from("<!doctype html><meta charset=utf-8><body style=\"margin:0;background:#1d1d20;color:#ddd;font-family:sans-serif\">");
+        for (label, secs, w, h) in [("120x38 t=1.7", 1.7, 120u16, 38u16), ("120x38 t=4.4", 4.4, 120, 38), ("160x44 t=2.9", 2.9, 160, 44), ("100x30 t=2.9", 2.9, 100, 30)] {
+            let mut live = App::new(nix::unistd::geteuid().is_root(), "me".into());
+            live.look.truecolor = std::env::var_os("PORTWATCH_256").is_none();
+            live.rescan();
+            live.tab = Tab::Radar;
+            live.frozen_clock = Some(Duration::from_secs_f32(secs));
+            select_first(&mut live);
+            page.push_str(&format!("<h4 style=\"margin:10px 8px 2px\">{label} (this machine's real ports)</h4>"));
+            page.push_str(&screen_html(&mut live, w, h));
+        }
+        std::fs::write(path, page).unwrap();
     }
 
     /// Preview the layout as plain text:

@@ -625,9 +625,10 @@ mod tests {
             .env("PORTWATCH_TEST_SECRET", "hunter2-super-secret")
             .spawn()
             .unwrap();
-        for _ in 0..200 {
+        for _ in 0..300 {
             let comm = fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
-            if comm.trim_end() == "sleep" {
+            let env = fs::read(format!("/proc/{}/environ", child.id())).unwrap_or_default();
+            if comm.trim_end() == "sleep" && !env.is_empty() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));

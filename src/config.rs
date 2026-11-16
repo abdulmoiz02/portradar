@@ -28,6 +28,9 @@ pub struct Config {
     pub animations: bool,
     /// The "Did you know?" line under the table.
     pub tips: bool,
+    /// Use smooth 24-bit colour gradients when the terminal says it supports
+    /// them (COLORTERM). Set to false for 256-colour steps only.
+    pub truecolor: bool,
 }
 
 impl Default for Config {
@@ -39,6 +42,7 @@ impl Default for Config {
             theme: "default".to_string(),
             animations: true,
             tips: true,
+            truecolor: true,
         }
     }
 }
@@ -51,6 +55,7 @@ ascii = false           # true = plain ASCII symbols and borders
 mouse = true            # click tabs and rows, scroll with the wheel
 animations = true       # false = no radar sweep, ripples or confetti
 tips = true             # false = hide the \"Did you know?\" line
+truecolor = true        # false = never use smooth 24-bit gradients
 ";
 
 impl Config {
@@ -60,8 +65,19 @@ impl Config {
 
     pub fn look(&self) -> Look {
         let theme = ThemeName::parse(&self.theme).unwrap_or(ThemeName::Default);
-        Look::new(theme, self.ascii)
+        Look {
+            truecolor: self.truecolor && terminal_has_truecolor(),
+            ..Look::new(theme, self.ascii)
+        }
     }
+}
+
+/// Does the terminal say it can show 24-bit colours?
+fn terminal_has_truecolor() -> bool {
+    std::env::var("COLORTERM").is_ok_and(|v| {
+        let v = v.to_lowercase();
+        v.contains("truecolor") || v.contains("24bit")
+    })
 }
 
 pub struct Loaded {
@@ -160,6 +176,7 @@ mod tests {
         )
         .unwrap();
         assert!(!c.animations && !c.tips);
+        assert!(parse("truecolor = false").is_ok_and(|c| !c.truecolor));
         assert_eq!(c.refresh(), Duration::from_secs(5));
         assert!(c.ascii);
         assert!(!c.mouse);
