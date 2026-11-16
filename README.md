@@ -75,7 +75,7 @@ The first time you start it, a three-page tour explains what a port is and how t
 | Key | Action |
 |---|---|
 | `↑` `↓` `PgUp` `PgDn` `g` `G` | Move the selection |
-| `←` `→` / `Tab` / `1` `2` `3` | Switch tab: Listening, Connections, Events |
+| `←` `→` / `Tab` / `1` `2` `3` `4` | Switch tab: Listening, Connections, Events, Radar |
 | `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
 | `Esc` | Clear the search |
 | `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
@@ -87,6 +87,7 @@ The first time you start it, a three-page tour explains what a port is and how t
 | `o` | Open the port in your web browser (TCP only) |
 | `:` or `Ctrl+P` | Command menu |
 | `p` | Pause or resume refreshing |
+| `T` | Try the next colour theme (lasts until you quit; see Settings to keep one) |
 | `?` | Help |
 | `q` / `Ctrl+C` | Quit |
 
@@ -132,6 +133,16 @@ Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` go
 
 The **technical table** (`t`) swaps the friendly columns for the raw facts: the exact bind addresses, kernel socket state, PID and inode (a `+2` means two more sockets are merged into the row).
 
+### The fun parts
+
+- **Radar** (`4`): your listening ports as dots on three rings. The centre is this computer; the inner ring is ports only this computer can reach, the middle ring one network, the outer ring the whole network, so the more open a port is, the further out it sits. A sweep goes round every six seconds and flashes the dots it passes, and a port that just opened sends out a ripple. Each dot keeps its place (it is worked out from the port and program, not from the sort order), the selected port is always labelled, and `↑` `↓`, the filters, `k`, `f`, `o` and `Enter` work as on the Listening tab. If the rings are too full for every dot, `+N not shown` says so.
+- **History graphs** on the summary cards: the last minute of each count, so you can see ports and connections come and go.
+- **Confetti** when you free a port with `f` and portwatch has checked that the port really is free. Plain `k` never celebrates.
+- **Did you know?** A line under the table with a fact about the selected port (SSH, DNS, MySQL, Redis and so on, kept to default ports and what the protocol does), or a tip about portwatch that changes every 15 seconds.
+- **Themes:** `default`, `light`, `mono`, `nord`, `dracula`, `cyberpunk`, `matrix` and `colorblind` (blue and orange instead of green and red). `T` cycles through them. They use 256-colour values, so they work on any 256-colour terminal.
+
+For a perfectly still screen set `animations = false` (no sweep, ripples or confetti; the radar stays put). `tips = false` hides the Did you know? line.
+
 ### Stopping processes safely
 
 - You always confirm first, and the popup shows the process name, PID and port.
@@ -148,9 +159,11 @@ portwatch works without any settings. To change them, create `~/.config/portwatc
 
 ```toml
 refresh_seconds = 1     # how often the table refreshes (1 to 30)
-theme = "default"       # "default" (dark terminal), "light" or "mono"
+theme = "default"       # default, light, mono, nord, dracula, cyberpunk, matrix, colorblind
 ascii = false           # true = plain ASCII symbols and borders
 mouse = true            # click tabs and rows, scroll with the wheel
+animations = true       # false = no radar sweep, ripples or confetti
+tips = true             # false = hide the "Did you know?" line
 ```
 
 portwatch only ever reads this file. If it has a mistake, portwatch shows a message in the footer and uses the defaults. The only file portwatch writes is a tiny marker (`~/.local/state/portwatch/tour-seen`) so the tour is shown once, and never when run as root.
@@ -172,7 +185,8 @@ sudo "$(which portwatch)"
 3. **Inspect** (`src/inspect.rs`, `src/inspector.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd. The Inspector collects everything in `src/inspector.rs` (process facts, sockets with queue sizes, origin, environment kept apart, raw `/proc` text) and `src/clip.rs` handles copying.
 4. **Draw** (`src/ui.rs`, `src/app.rs`): a loop checks the keyboard every 100 ms (so keys feel instant), rescans every second, and redraws with [ratatui](https://ratatui.rs).
 5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
-6. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
+6. **Fun layer:** `src/radar.rs` lays out the radar as a pure function (same ports, same cells; time is passed in), `src/confetti.rs` and `src/spark.rs` are pure too, `src/tips.rs` holds the facts.
+7. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
 
 ## Development
 

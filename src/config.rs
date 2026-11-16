@@ -21,8 +21,13 @@ pub struct Config {
     pub ascii: bool,
     /// Let the mouse click tabs and rows and scroll the table.
     pub mouse: bool,
-    /// "default" (dark terminals), "light" or "mono".
+    /// "default", "light", "mono", "nord", "dracula", "cyberpunk", "matrix" or "colorblind".
     pub theme: String,
+    /// Motion: the radar sweep, new-port ripples and the confetti. Turn off
+    /// for a perfectly still screen.
+    pub animations: bool,
+    /// The "Did you know?" line under the table.
+    pub tips: bool,
 }
 
 impl Default for Config {
@@ -32,6 +37,8 @@ impl Default for Config {
             ascii: false,
             mouse: true,
             theme: "default".to_string(),
+            animations: true,
+            tips: true,
         }
     }
 }
@@ -39,9 +46,11 @@ impl Default for Config {
 pub const SAMPLE: &str = "\
 # portwatch settings. Every line is optional; delete any you don't need.
 refresh_seconds = 1     # how often the table refreshes (1 to 30)
-theme = \"default\"       # \"default\" (dark terminal), \"light\" or \"mono\"
+theme = \"default\"       # default, light, mono, nord, dracula, cyberpunk, matrix, colorblind
 ascii = false           # true = plain ASCII symbols and borders
 mouse = true            # click tabs and rows, scroll with the wheel
+animations = true       # false = no radar sweep, ripples or confetti
+tips = true             # false = hide the \"Did you know?\" line
 ";
 
 impl Config {
@@ -73,7 +82,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
     }
     if ThemeName::parse(&config.theme).is_none() {
         return Err(format!(
-            "unknown theme \"{}\" (use default, light or mono)",
+            "unknown theme \"{}\" (use default, light, mono, nord, dracula, cyberpunk, matrix or colorblind)",
             config.theme
         ));
     }
@@ -146,7 +155,11 @@ mod tests {
 
     #[test]
     fn reads_every_setting() {
-        let c = parse("refresh_seconds = 5\nascii = true\nmouse = false\ntheme = \"light\"").unwrap();
+        let c = parse(
+            "refresh_seconds = 5\nascii = true\nmouse = false\ntheme = \"light\"\nanimations = false\ntips = false",
+        )
+        .unwrap();
+        assert!(!c.animations && !c.tips);
         assert_eq!(c.refresh(), Duration::from_secs(5));
         assert!(c.ascii);
         assert!(!c.mouse);

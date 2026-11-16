@@ -1,5 +1,6 @@
 mod app;
 mod browser;
+mod confetti;
 mod config;
 mod clip;
 mod free;
@@ -8,9 +9,12 @@ mod inspector;
 mod kill;
 mod model;
 mod palette;
+mod radar;
 mod scanner;
 mod services;
+mod spark;
 mod theme;
+mod tips;
 mod ui;
 mod verdict;
 
@@ -131,6 +135,7 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
     let tour_dir = if is_root { None } else { config::state_dir() };
     let mut app = App::new(is_root, current_user(is_root))
         .with_look(loaded.config.look())
+        .with_motion(loaded.config.animations, loaded.config.tips)
         .with_tour_dir(tour_dir);
     let scan_every = loaded.config.refresh();
     app.rescan();

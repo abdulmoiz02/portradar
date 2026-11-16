@@ -19,8 +19,10 @@ use crate::inspect::{self, Details};
 use crate::inspector::{self, Snapshot};
 use crate::kill;
 use crate::model::{self, Group, GroupKey, SortKey, Tracker};
+use crate::confetti;
 use crate::palette::{self, Command};
 use crate::scanner::{self, Protocol};
+use crate::spark::History;
 use crate::theme::Look;
 use crate::verdict;
 
@@ -39,10 +41,12 @@ pub enum Tab {
     Listening,
     Connections,
     Events,
+    /// Listening ports drawn as dots on concentric rings.
+    Radar,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Listening, Tab::Connections, Tab::Events];
+    pub const ALL: [Tab; 4] = [Tab::Listening, Tab::Connections, Tab::Events, Tab::Radar];
 
     pub fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
@@ -52,6 +56,14 @@ impl Tab {
         let n = Tab::ALL.len() as isize;
         Tab::ALL[(self.index() as isize + delta).rem_euclid(n) as usize]
     }
+}
+
+/// The burst of confetti after a port is really freed.
+#[derive(Debug, Clone)]
+pub struct Confetti {
+    pub started: Instant,
+    pub seed: u64,
+    pub port: u16,
 }
 
 /// A stop the user has asked for but not yet confirmed.
@@ -216,6 +228,18 @@ pub struct App {
     pub pending_free: Option<PendingFree>,
     /// Show raw facts (bind addresses, kernel state, inode) in the table.
     pub technical: bool,
+    /// When portwatch started: the radar sweep and the tips follow this clock.
+    pub started: Instant,
+    /// Tests set this to freeze the clock.
+    pub frozen_clock: Option<Duration>,
+    /// Motion on or off (radar sweep, ripples, confetti).
+    pub animations: bool,
+    /// Show the "Did you know?" line.
+    pub tips: bool,
+    /// Recent counts for the sparklines.
+    pub history: History,
+    pub confetti: Option<Confetti>,
+    celebrations: u64,
     /// Reverse DNS results: `Some(name)`, or `None` if the lookup failed.
     /// Failures are remembered too, so we do not ask again.
     pub hosts: HashMap<IpAddr, Option<String>>,
@@ -268,6 +292,13 @@ impl App {
             look: Look::default(),
             pending_free: None,
             technical: false,
+            started: Instant::now(),
+            frozen_clock: None,
+            animations: true,
+            tips: true,
+            history: History::default(),
+            confetti: None,
+            celebrations: 0,
             hosts: HashMap::new(),
             resolving: HashSet::new(),
             dns_tx,
@@ -287,6 +318,58 @@ impl App {
     pub fn with_look(mut self, look: Look) -> Self {
         self.look = look;
         self
+    }
+
+    pub fn with_motion(mut self, animations: bool, tips: bool) -> Self {
+        self.animations = animations;
+        self.tips = tips;
+        self
+    }
+
+    /// Time since start, for the sweep and the rotating tips.
+    pub fn elapsed(&self) -> Duration {
+        self.frozen_clock.unwrap_or_else(|| self.started.elapsed())
+    }
+
+    /// The radar sweep angle in radians, or `None` when it should not move.
+    pub fn sweep_angle(&self) -> Option<f32> {
+        const PERIOD_SECS: f32 = 6.0;
+        if !self.animations || self.paused {
+            return None;
+        }
+        Some((self.elapsed().as_secs_f32() / PERIOD_SECS * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU))
+    }
+
+    /// The confetti to draw right now: (seconds since the burst, seed, port).
+    /// Never while a popup or a text box is open.
+    pub fn confetti_now(&self) -> Option<(f32, u64, u16)> {
+        if !self.animations || !matches!(self.mode, Mode::Normal) {
+            return None;
+        }
+        let c = self.confetti.as_ref()?;
+        let t = c.started.elapsed();
+        (t <= confetti::DURATION).then(|| (t.as_secs_f32(), c.seed, c.port))
+    }
+
+    fn celebrate(&mut self, port: u16) {
+        if !self.animations {
+            return;
+        }
+        self.celebrations += 1;
+        self.confetti = Some(Confetti {
+            started: Instant::now(),
+            seed: (u64::from(port) << 16) | self.celebrations,
+            port,
+        });
+    }
+
+    fn cycle_theme(&mut self) {
+        let next = self.look.name.next();
+        self.look = Look::new(next, self.look.ascii);
+        self.set_status(
+            format!("Theme: {0}. To keep it, set theme = \"{0}\" in the settings file", next.label()),
+            false,
+        );
     }
 
     /// Remember the tour in `dir`. Pass `None` to never write anything.
@@ -346,6 +429,13 @@ impl App {
     /// Collect answers from background work (host-name lookups, clipboard
     /// programs). The main loop calls this every pass.
     pub fn tick(&mut self) {
+        if self
+            .confetti
+            .as_ref()
+            .is_some_and(|c| c.started.elapsed() > confetti::DURATION)
+        {
+            self.confetti = None;
+        }
         let mut looked_up = false;
         while let Ok((ip, name)) = self.dns_rx.try_recv() {
             self.hosts.insert(ip, name);
@@ -393,6 +483,16 @@ impl App {
             }
             Err(err) => self.scan_error = Some(err.to_string()),
         }
+        // Only a real scan adds to the history, using the same merged
+        // counts the cards show.
+        if self.scan_error.is_none() {
+            self.history.record(
+                self.tracker.listening_count(),
+                self.tracker.exposed_count(),
+                self.tracker.connection_count(),
+                self.tracker.hidden_count(),
+            );
+        }
         self.check_pending_free();
         self.refresh_inspector();
         self.sync_selection();
@@ -404,6 +504,7 @@ impl App {
         let want_listening = match self.tab {
             Tab::Listening => true,
             Tab::Connections => false,
+            Tab::Radar => true,
             Tab::Events => return Vec::new(),
         };
         let mut groups = model::group_rows(
@@ -471,7 +572,7 @@ impl App {
         if self.only_mine {
             active.push("mine only");
         }
-        if self.tab == Tab::Listening {
+        if matches!(self.tab, Tab::Listening | Tab::Radar) {
             if self.only_exposed {
                 active.push("exposed only");
             }
@@ -808,6 +909,7 @@ impl App {
             Command::Open => self.request_open(),
             Command::Inspect => self.open_inspector(),
             Command::ToggleTechnical => self.toggle_technical(),
+            Command::NextTheme => self.cycle_theme(),
             Command::SortBy(key) => {
                 self.sort = key;
                 self.after_view_change();
@@ -904,6 +1006,8 @@ impl App {
             KeyCode::Char('1') => self.set_tab(Tab::Listening),
             KeyCode::Char('2') => self.set_tab(Tab::Connections),
             KeyCode::Char('3') => self.set_tab(Tab::Events),
+            KeyCode::Char('4') => self.set_tab(Tab::Radar),
+            KeyCode::Char('T') => self.cycle_theme(),
             KeyCode::Char('/') => self.mode = Mode::Filter,
             KeyCode::Enter => self.open_inspector(),
             KeyCode::Char('t') => self.toggle_technical(),
@@ -980,8 +1084,8 @@ impl App {
     // ---- quick filters ----------------------------------------------
 
     fn toggle_exposed(&mut self) {
-        if self.tab != Tab::Listening {
-            self.set_status("This filter is for the Listening tab", true);
+        if !matches!(self.tab, Tab::Listening | Tab::Radar) {
+            self.set_status("This filter is for the Listening and Radar tabs", true);
             return;
         }
         self.only_exposed = !self.only_exposed;
@@ -1006,8 +1110,8 @@ impl App {
     }
 
     fn toggle_noise(&mut self) {
-        if self.tab != Tab::Listening {
-            self.set_status("This filter is for the Listening tab", true);
+        if !matches!(self.tab, Tab::Listening | Tab::Radar) {
+            self.set_status("This filter is for the Listening and Radar tabs", true);
             return;
         }
         self.hide_noise = !self.hide_noise;
@@ -1025,7 +1129,7 @@ impl App {
     /// `k` / `K` stop the selected program. `f` does the same but frames it
     /// as freeing the port, and afterwards checks that the port is free.
     fn request_stop(&mut self, force: bool, free: bool) {
-        if self.tab != Tab::Listening {
+        if !matches!(self.tab, Tab::Listening | Tab::Radar) {
             self.set_status("Switch to the Listening tab to stop a program", true);
             return;
         }
@@ -1125,6 +1229,7 @@ impl App {
         if holders.is_empty() {
             self.pending_free = None;
             self.set_status(format!("Port {} is free.", pending.port), false);
+            self.celebrate(pending.port);
         } else if pending.since.elapsed() >= FREE_WAIT {
             self.pending_free = None;
             self.set_status(
@@ -1167,6 +1272,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::scanner::{PortEntry, ProcessInfo};
+    use crate::theme::ThemeName;
     use ratatui::crossterm::event::KeyEvent;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1995,6 +2101,10 @@ mod tests {
             press(&mut app, KeyCode::Char(key));
             check(&app, what);
         }
+        for _ in 0..ThemeName::ALL.len() {
+            press(&mut app, KeyCode::Char('T'));
+            check(&app, "theme switch");
+        }
         press(&mut app, KeyCode::Char('2'));
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Char('v'));
@@ -2036,6 +2146,132 @@ mod tests {
     }
 
     #[test]
+    fn the_radar_tab_works_like_the_listening_tab() {
+        let mut app = app_with(vec![
+            listener(3000, 1, Some(("portwatch", own_pid()))),
+            listener(5000, 2, Some(("node", 4242))),
+        ]);
+        press(&mut app, KeyCode::Char('4'));
+        assert_eq!(app.tab, Tab::Radar);
+        assert_eq!(app.visible().len(), 2, "the radar shows the listening ports");
+        assert_eq!(selected_port(&app), 3000);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_port(&app), 5000);
+
+        // Filters, stopping and the Inspector all work from the radar.
+        press(&mut app, KeyCode::Char('m'));
+        assert!(app.only_mine);
+        press(&mut app, KeyCode::Char('e'));
+        assert!(app.only_exposed, "the exposed filter is allowed on the radar");
+        press(&mut app, KeyCode::Char('e'));
+        press(&mut app, KeyCode::Char('m'));
+        // (Nothing was exposed, so the selection was reset to the first row.)
+        press(&mut app, KeyCode::Down);
+        assert_eq!(selected_port(&app), 5000);
+        press(&mut app, KeyCode::Char('k'));
+        assert!(matches!(app.mode, Mode::ConfirmKill(_)));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Inspector(_)));
+        press(&mut app, KeyCode::Esc);
+
+        // The menu has an entry for it.
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "radar");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.tab, Tab::Radar);
+    }
+
+    #[test]
+    fn t_cycles_through_every_theme_and_back_with_a_short_status() {
+        let mut app = app_with(vec![]);
+        let start = app.look.name;
+        let mut seen = vec![start];
+        for _ in 0..ThemeName::ALL.len() {
+            press(&mut app, KeyCode::Char('T'));
+            let status = &app.status.as_ref().unwrap().text;
+            assert!(status.contains("settings file") && status.contains(app.look.name.label()), "{status}");
+            assert!(status.chars().count() <= 78, "{} chars: {status}", status.chars().count());
+            seen.push(app.look.name);
+        }
+        assert_eq!(*seen.last().unwrap(), start, "full circle");
+        seen.pop();
+        let mut all = ThemeName::ALL.to_vec();
+        all.sort_by_key(|t| t.label());
+        seen.sort_by_key(|t| t.label());
+        assert_eq!(seen, all, "every theme was visited once");
+
+        // The menu has an entry too, and ASCII mode survives theme changes.
+        let mut app = app_with(vec![]);
+        app.look = Look::new(ThemeName::Default, true);
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "colour theme");
+        press(&mut app, KeyCode::Enter);
+        assert_ne!(app.look.name, ThemeName::Default);
+        assert!(app.look.ascii);
+    }
+
+    #[test]
+    fn each_real_scan_adds_one_point_to_the_history() {
+        let mut app = App::new(false, "alice".into());
+        assert!(app.history.listening.is_empty());
+        app.rescan();
+        app.rescan();
+        assert_eq!(app.history.listening.len(), 2);
+        assert_eq!(app.history.connections.len(), 2);
+        assert_eq!(app.history.listening[0] as usize, app.tracker.listening_count());
+    }
+
+    #[test]
+    fn confetti_follows_a_verified_free_and_nothing_else() {
+        // A plain stop never celebrates.
+        let mut child = crate::kill::spawn_sleeper();
+        let mut app = app_with(vec![listener(3000, 1, Some(("sleep", child.id())))]);
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('y'));
+        child.wait().unwrap();
+        app.tracker.update(vec![], Instant::now(), SystemTime::now());
+        app.check_pending_free();
+        assert!(app.confetti.is_none() && app.confetti_now().is_none());
+
+        // Freeing a port celebrates only once it is really free.
+        let mut child = crate::kill::spawn_sleeper();
+        let mut app = app_with(vec![listener(3000, 1, Some(("sleep", child.id())))]);
+        press(&mut app, KeyCode::Char('f'));
+        press(&mut app, KeyCode::Char('y'));
+        child.wait().unwrap();
+        app.check_pending_free();
+        assert!(app.confetti.is_none(), "still held on the first check");
+        app.tracker.update(vec![], Instant::now(), SystemTime::now());
+        app.check_pending_free();
+        let (t, _seed, port) = app.confetti_now().expect("celebration");
+        assert!(t < 1.0 && port == 3000);
+
+        // Not while a popup or text box is open, and it ends by itself.
+        app.mode = Mode::Help;
+        assert!(app.confetti_now().is_none());
+        app.mode = Mode::Normal;
+        app.confetti.as_mut().unwrap().started = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        assert!(app.confetti_now().is_none());
+        app.tick();
+        assert!(app.confetti.is_none());
+
+        // With animations off there is no confetti at all (the status remains).
+        let mut still = app_with(vec![listener(3000, 1, Some(("sleep", 4_000_000)))]).with_motion(false, true);
+        still.pending_free = Some(PendingFree {
+            protocol: Protocol::Tcp,
+            port: 3000,
+            since: Instant::now(),
+        });
+        still.tracker.update(vec![], Instant::now(), SystemTime::now());
+        still.check_pending_free();
+        assert!(still.confetti.is_none());
+        assert_eq!(still.status.as_ref().unwrap().text, "Port 3000 is free.");
+    }
+
+    #[test]
     fn the_wheel_scrolls_the_inspector() {
         let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
         open_inspector_on_first_row(&mut app);
@@ -2050,7 +2286,7 @@ mod tests {
     fn tabs_wrap_around() {
         let mut app = app_with(vec![]);
         press(&mut app, KeyCode::Left);
-        assert_eq!(app.tab, Tab::Events);
+        assert_eq!(app.tab, Tab::Radar);
         press(&mut app, KeyCode::Right);
         assert_eq!(app.tab, Tab::Listening);
     }

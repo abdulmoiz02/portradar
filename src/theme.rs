@@ -13,16 +13,59 @@ pub enum ThemeName {
     Light,
     /// Greys only. Meaning is carried by the symbols, not by colour.
     Mono,
+    Nord,
+    Dracula,
+    Cyberpunk,
+    /// Green on dark green, like a hacker film.
+    Matrix,
+    /// Blue and orange instead of green and red.
+    ColorBlind,
 }
 
 impl ThemeName {
+    /// Every theme, in the order the `T` key cycles through them.
+    pub const ALL: [ThemeName; 8] = [
+        ThemeName::Default,
+        ThemeName::Light,
+        ThemeName::Mono,
+        ThemeName::Nord,
+        ThemeName::Dracula,
+        ThemeName::Cyberpunk,
+        ThemeName::Matrix,
+        ThemeName::ColorBlind,
+    ];
+
     pub fn parse(name: &str) -> Option<ThemeName> {
         match name.trim().to_lowercase().as_str() {
             "default" | "dark" => Some(ThemeName::Default),
             "light" => Some(ThemeName::Light),
             "mono" | "monochrome" => Some(ThemeName::Mono),
+            "nord" => Some(ThemeName::Nord),
+            "dracula" => Some(ThemeName::Dracula),
+            "cyberpunk" => Some(ThemeName::Cyberpunk),
+            "matrix" | "hacker" => Some(ThemeName::Matrix),
+            "colorblind" | "colourblind" | "color-blind" | "colour-blind" => Some(ThemeName::ColorBlind),
             _ => None,
         }
+    }
+
+    /// The name to put in the settings file.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeName::Default => "default",
+            ThemeName::Light => "light",
+            ThemeName::Mono => "mono",
+            ThemeName::Nord => "nord",
+            ThemeName::Dracula => "dracula",
+            ThemeName::Cyberpunk => "cyberpunk",
+            ThemeName::Matrix => "matrix",
+            ThemeName::ColorBlind => "colorblind",
+        }
+    }
+
+    pub fn next(self) -> ThemeName {
+        let i = ThemeName::ALL.iter().position(|t| *t == self).unwrap_or(0);
+        ThemeName::ALL[(i + 1) % ThemeName::ALL.len()]
     }
 }
 
@@ -79,6 +122,81 @@ impl Theme {
                 select_bg: Color::Indexed(153),
                 select_fg: Color::Black,
             },
+            ThemeName::Nord => Theme {
+                accent: Color::Indexed(110),
+                on_accent: Color::Black,
+                dim: Color::Indexed(60),
+                subtle: Color::Indexed(146),
+                good: Color::Indexed(108),
+                warn: Color::Indexed(179),
+                bad: Color::Indexed(131),
+                bar_bg: Color::Indexed(236),
+                bar_fg: Color::Indexed(253),
+                chip_bg: Color::Indexed(238),
+                chip_fg: Color::Indexed(253),
+                select_bg: Color::Indexed(60),
+                select_fg: Color::Indexed(255),
+            },
+            ThemeName::Dracula => Theme {
+                accent: Color::Indexed(141),
+                on_accent: Color::Black,
+                dim: Color::Indexed(60),
+                subtle: Color::Indexed(103),
+                good: Color::Indexed(84),
+                warn: Color::Indexed(228),
+                bad: Color::Indexed(203),
+                bar_bg: Color::Indexed(236),
+                bar_fg: Color::Indexed(255),
+                chip_bg: Color::Indexed(238),
+                chip_fg: Color::Indexed(255),
+                select_bg: Color::Indexed(60),
+                select_fg: Color::Indexed(255),
+            },
+            ThemeName::Cyberpunk => Theme {
+                accent: Color::Indexed(201),
+                on_accent: Color::Black,
+                dim: Color::Indexed(90),
+                subtle: Color::Indexed(140),
+                good: Color::Indexed(51),
+                warn: Color::Indexed(226),
+                bad: Color::Indexed(197),
+                bar_bg: Color::Indexed(53),
+                bar_fg: Color::Indexed(51),
+                chip_bg: Color::Indexed(54),
+                chip_fg: Color::Indexed(219),
+                select_bg: Color::Indexed(54),
+                select_fg: Color::Indexed(231),
+            },
+            ThemeName::Matrix => Theme {
+                accent: Color::Indexed(46),
+                on_accent: Color::Black,
+                dim: Color::Indexed(22),
+                subtle: Color::Indexed(34),
+                good: Color::Indexed(40),
+                warn: Color::Indexed(190),
+                bad: Color::Indexed(160),
+                bar_bg: Color::Indexed(22),
+                bar_fg: Color::Indexed(46),
+                chip_bg: Color::Indexed(22),
+                chip_fg: Color::Indexed(46),
+                select_bg: Color::Indexed(22),
+                select_fg: Color::Indexed(82),
+            },
+            ThemeName::ColorBlind => Theme {
+                accent: Color::Indexed(75),
+                on_accent: Color::Black,
+                dim: Color::DarkGray,
+                subtle: Color::Gray,
+                good: Color::Indexed(39),
+                warn: Color::Indexed(214),
+                bad: Color::Indexed(201),
+                bar_bg: Color::Indexed(236),
+                bar_fg: Color::White,
+                chip_bg: Color::Indexed(238),
+                chip_fg: Color::White,
+                select_bg: Color::Indexed(238),
+                select_fg: Color::White,
+            },
             ThemeName::Mono => Theme {
                 accent: Color::White,
                 on_accent: Color::Black,
@@ -120,6 +238,13 @@ pub struct Glyphs {
     pub mask: &'static str,
     pub quote_open: &'static str,
     pub quote_close: &'static str,
+    pub radar_ring: &'static str,
+    pub radar_sweep: &'static str,
+    pub radar_center: &'static str,
+    pub radar_ripple: &'static str,
+    /// Eight steps from low to high, for sparklines.
+    pub spark: [&'static str; 8],
+    pub confetti: [&'static str; 6],
 }
 
 impl Glyphs {
@@ -143,6 +268,12 @@ impl Glyphs {
         mask: "•",
         quote_open: "“",
         quote_close: "”",
+        radar_ring: "·",
+        radar_sweep: "░",
+        radar_center: "◎",
+        radar_ripple: "○",
+        spark: ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+        confetti: ["✦", "✧", "●", "◆", "▲", "·"],
     };
 
     pub const ASCII: Glyphs = Glyphs {
@@ -165,11 +296,18 @@ impl Glyphs {
         mask: "*",
         quote_open: "\"",
         quote_close: "\"",
+        radar_ring: ".",
+        radar_sweep: ":",
+        radar_center: "@",
+        radar_ripple: "O",
+        spark: [".", ":", "-", "=", "+", "*", "#", "%"],
+        confetti: ["*", "+", "o", "x", "#", "."],
     };
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Look {
+    pub name: ThemeName,
     pub theme: Theme,
     pub glyphs: Glyphs,
     pub ascii: bool,
@@ -178,6 +316,7 @@ pub struct Look {
 impl Look {
     pub fn new(theme: ThemeName, ascii: bool) -> Look {
         Look {
+            name: theme,
             theme: Theme::named(theme),
             glyphs: if ascii { Glyphs::ASCII } else { Glyphs::UNICODE },
             ascii,
@@ -223,13 +362,43 @@ mod tests {
     }
 
     #[test]
+    fn every_theme_has_a_name_that_parses_back_and_cycling_visits_all() {
+        for theme in ThemeName::ALL {
+            assert_eq!(ThemeName::parse(theme.label()), Some(theme), "{theme:?}");
+        }
+        let mut seen = vec![ThemeName::Default];
+        let mut t = ThemeName::Default.next();
+        while t != ThemeName::Default {
+            seen.push(t);
+            t = t.next();
+        }
+        assert_eq!(seen.len(), ThemeName::ALL.len());
+        assert_eq!(ThemeName::parse("hacker"), Some(ThemeName::Matrix));
+        assert_eq!(ThemeName::parse("Colour-Blind"), Some(ThemeName::ColorBlind));
+    }
+
+    #[test]
+    fn themes_use_256_colour_values_not_rgb() {
+        for theme in ThemeName::ALL {
+            let t = Theme::named(theme);
+            for c in [t.accent, t.dim, t.subtle, t.good, t.warn, t.bad, t.bar_bg, t.bar_fg, t.chip_bg, t.chip_fg, t.select_bg, t.select_fg] {
+                assert!(!matches!(c, Color::Rgb(..)), "{theme:?} uses RGB: {c:?}");
+            }
+        }
+    }
+
+    #[test]
     fn ascii_glyphs_really_are_ascii() {
         let g = Glyphs::ASCII;
         for s in [
             g.logo, g.live, g.paused, g.warn, g.row_bar, g.local, g.whole, g.one, g.up, g.down,
             g.keys_move, g.keys_tabs, g.dot, g.cursor, g.normal, g.dev, g.mask, g.quote_open,
-            g.quote_close,
-        ] {
+            g.quote_close, g.radar_ring, g.radar_sweep, g.radar_center, g.radar_ripple,
+        ]
+        .into_iter()
+        .chain(g.spark)
+        .chain(g.confetti)
+        {
             assert!(s.is_ascii(), "{s:?} is not ASCII");
         }
     }
