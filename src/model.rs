@@ -3,9 +3,10 @@
 //! terminal or `/proc`, so it is easy to test.
 
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::scanner::PortEntry;
+use crate::scanner::{EntryKey, PortEntry, ProcessInfo, Protocol};
 use crate::services::{Access, service_name};
 
 /// How long a freshly opened port is shown in green.
@@ -116,28 +117,33 @@ impl Tracker {
         self.rows = kept;
     }
 
+    /// Listening ports, as shown in the table: one entry per program per
+    /// port, so the IPv4 and IPv6 sockets of one server count once.
     pub fn listening_count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|r| r.closed_at.is_none() && r.entry.listening)
-            .count()
+        self.open_listener_groups().len()
     }
 
     /// Listening ports that something other than this computer may reach.
     pub fn exposed_count(&self) -> usize {
-        self.rows
+        self.open_listener_groups()
             .iter()
-            .filter(|r| r.closed_at.is_none() && r.entry.listening)
-            .filter(|r| Access::of(r.entry.local.ip()).is_exposed())
+            .filter(|g| g.access().is_exposed())
             .count()
     }
 
     /// Listening ports whose owning process we are not allowed to see.
     pub fn hidden_count(&self) -> usize {
-        self.rows
+        self.open_listener_groups()
             .iter()
-            .filter(|r| r.closed_at.is_none() && r.entry.listening && r.entry.process.is_none())
+            .filter(|g| g.process().is_none())
             .count()
+    }
+
+    fn open_listener_groups(&self) -> Vec<Group<'_>> {
+        group_rows(self.rows.iter().filter(|r| r.entry.listening))
+            .into_iter()
+            .filter(|g| !g.is_closed())
+            .collect()
     }
 
     pub fn connection_count(&self) -> usize {
@@ -210,30 +216,169 @@ impl SortKey {
     }
 }
 
-pub fn sort_rows(rows: &mut [&Row], key: SortKey, reverse: bool) {
+/// Which program owns a listening socket, for grouping.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Owner {
+    Pid(u32),
+    /// The program is hidden from us; all we know is the account it runs as.
+    Hidden(String),
+}
+
+/// Identity of a table row. Listening sockets of the same program on the
+/// same port are merged into one row (for example IPv4 and IPv6); every
+/// other socket is its own row.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GroupKey {
+    Listener {
+        protocol: Protocol,
+        port: u16,
+        owner: Owner,
+    },
+    Socket(EntryKey),
+}
+
+/// One table row: one or more sockets shown together.
+///
+/// Grouping only changes how rows are *displayed*. The tracker, the event
+/// log and the new/closed highlighting still work per socket.
+#[derive(Debug, Clone)]
+pub struct Group<'a> {
+    /// Never empty. Sorted by address.
+    pub members: Vec<&'a Row>,
+}
+
+impl<'a> Group<'a> {
+    pub fn first(&self) -> &'a Row {
+        self.members[0]
+    }
+
+    pub fn key(&self) -> GroupKey {
+        group_key(self.first())
+    }
+
+    pub fn protocol(&self) -> Protocol {
+        self.first().entry.protocol
+    }
+
+    pub fn port(&self) -> u16 {
+        self.first().entry.local.port()
+    }
+
+    pub fn listening(&self) -> bool {
+        self.first().entry.listening
+    }
+
+    pub fn process(&self) -> Option<&'a ProcessInfo> {
+        self.first().entry.process.as_ref()
+    }
+
+    pub fn user(&self) -> &'a str {
+        &self.first().entry.user
+    }
+
+    /// The most exposed of the members. A row that mixes `127.0.0.1` and
+    /// `0.0.0.0` must say "whole network", never understate.
+    pub fn access(&self) -> Access {
+        self.members
+            .iter()
+            .map(|r| Access::of(r.entry.local.ip()))
+            .max()
+            .unwrap_or(Access::ThisPcOnly)
+    }
+
+    pub fn addresses(&self) -> Vec<IpAddr> {
+        let mut ips: Vec<IpAddr> = self.members.iter().map(|r| r.entry.local.ip()).collect();
+        ips.sort();
+        ips.dedup();
+        ips
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.members.iter().all(|r| r.closed_at.is_some())
+    }
+
+    pub fn state(&self, now: Instant) -> RowState {
+        if self.is_closed() {
+            RowState::Closed
+        } else if self.members.iter().any(|r| r.state(now) == RowState::New) {
+            RowState::New
+        } else {
+            RowState::Normal
+        }
+    }
+}
+
+fn group_key(row: &Row) -> GroupKey {
+    let e = &row.entry;
+    if !e.listening {
+        return GroupKey::Socket(e.key());
+    }
+    GroupKey::Listener {
+        protocol: e.protocol,
+        port: e.local.port(),
+        owner: match &e.process {
+            Some(p) => Owner::Pid(p.pid),
+            None => Owner::Hidden(e.user.clone()),
+        },
+    }
+}
+
+/// Merge rows into display groups, keeping first-seen order.
+///
+/// Different PIDs are never merged. If part of a group has closed but part
+/// is still open, only the open sockets are kept, so a half-closed pair
+/// does not look like two ports.
+pub fn group_rows<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Vec<Group<'a>> {
+    let mut index: HashMap<GroupKey, usize> = HashMap::new();
+    let mut groups: Vec<Vec<&'a Row>> = Vec::new();
+    for row in rows {
+        let slot = *index.entry(group_key(row)).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[slot].push(row);
+    }
+    groups
+        .into_iter()
+        .map(|mut members| {
+            if members.iter().any(|r| r.closed_at.is_none()) {
+                members.retain(|r| r.closed_at.is_none());
+            }
+            members.sort_by_key(|r| (r.entry.local.ip(), r.entry.local.port()));
+            Group { members }
+        })
+        .collect()
+}
+
+pub fn sort_groups(groups: &mut [Group<'_>], key: SortKey, reverse: bool) {
     // Always start from port order so ties are stable.
-    rows.sort_by_key(|r| (r.entry.protocol, r.entry.local.port(), r.entry.local.ip()));
+    groups.sort_by_key(|g| (g.protocol(), g.port(), g.first().entry.local.ip()));
     match key {
         SortKey::Port => {}
-        SortKey::Process => rows.sort_by_cached_key(|r| match &r.entry.process {
+        SortKey::Process => groups.sort_by_cached_key(|g| match g.process() {
             Some(p) => (0, p.name.to_lowercase()),
             None => (1, String::new()), // unknown owners last
         }),
-        SortKey::Pid => rows.sort_by_key(|r| match &r.entry.process {
+        SortKey::Pid => groups.sort_by_key(|g| match g.process() {
             Some(p) => (0, p.pid),
             None => (1, 0),
         }),
-        SortKey::User => rows.sort_by_cached_key(|r| r.entry.user.to_lowercase()),
-        SortKey::Uptime => rows.sort_by_key(|r| match r.entry.process.as_ref().and_then(|p| p.started_at) {
+        SortKey::User => groups.sort_by_cached_key(|g| g.user().to_lowercase()),
+        SortKey::Uptime => groups.sort_by_key(|g| match g.process().and_then(|p| p.started_at) {
             // Larger start time = started later = shorter uptime = first.
             Some(started) => (0, std::cmp::Reverse(started)),
             None => (1, std::cmp::Reverse(0)),
         }),
-        SortKey::Access => rows.sort_by_key(|r| Access::of(r.entry.local.ip())),
+        SortKey::Access => groups.sort_by_key(|g| g.access()),
     }
     if reverse {
-        rows.reverse();
+        groups.reverse();
     }
+}
+
+/// True if any socket in the group matches the search text.
+pub fn group_matches(group: &Group<'_>, filter: &str) -> bool {
+    group.members.iter().any(|r| matches(&r.entry, filter))
 }
 
 /// Case-insensitive match; every whitespace-separated word must appear in
@@ -297,6 +442,112 @@ mod tests {
 
     fn t0() -> (Instant, SystemTime) {
         (Instant::now(), SystemTime::now())
+    }
+
+    /// Sort single-socket rows through the group sorter.
+    fn sort_rows<'a>(rows: &mut Vec<&'a Row>, key: SortKey, reverse: bool) {
+        let mut groups: Vec<Group> = rows.iter().map(|r| Group { members: vec![*r] }).collect();
+        sort_groups(&mut groups, key, reverse);
+        *rows = groups.iter().map(|g| g.first()).collect();
+    }
+
+    fn row(e: PortEntry) -> Row {
+        Row { entry: e, first_seen: None, closed_at: None }
+    }
+
+    fn at(port: u16, ip: &str, inode: u64, name: Option<&str>, pid: u32) -> PortEntry {
+        let mut e = entry(port, inode, name, true);
+        e.local = if ip.contains(':') {
+            format!("[{ip}]:{port}").parse().unwrap()
+        } else {
+            format!("{ip}:{port}").parse().unwrap()
+        };
+        if let Some(p) = e.process.as_mut() {
+            p.pid = pid;
+        }
+        e
+    }
+
+    #[test]
+    fn ipv4_and_ipv6_sockets_of_one_program_become_one_row() {
+        let a = row(at(6379, "127.0.0.1", 1, Some("redis"), 700));
+        let b = row(at(6379, "::1", 2, Some("redis"), 700));
+        let groups = group_rows([&a, &b]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+        assert_eq!(groups[0].addresses().len(), 2);
+    }
+
+    #[test]
+    fn different_programs_are_never_merged() {
+        // Same UDP port, different PIDs (browser and avahi on 5353).
+        let a = row(at(5353, "224.0.0.251", 1, Some("brave"), 4418));
+        let b = row(at(5353, "0.0.0.0", 2, Some("avahi"), 700));
+        assert_eq!(group_rows([&a, &b]).len(), 2);
+        // Hidden owners merge only with the same account, same port.
+        let h1 = row(at(631, "127.0.0.1", 3, None, 0));
+        let h2 = row(at(631, "::1", 4, None, 0));
+        let mut other = at(631, "0.0.0.0", 5, None, 0);
+        other.user = "bob".into();
+        let h3 = row(other);
+        let groups = group_rows([&h1, &h2, &h3]);
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn a_merged_row_shows_the_most_exposed_address() {
+        let local = row(at(8080, "127.0.0.1", 1, Some("node"), 9));
+        let open = row(at(8080, "0.0.0.0", 2, Some("node"), 9));
+        let groups = group_rows([&local, &open]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].access(), Access::WholeNetwork);
+    }
+
+    #[test]
+    fn a_half_closed_group_shows_only_its_open_sockets() {
+        let open = row(at(6379, "127.0.0.1", 1, Some("redis"), 700));
+        let mut gone = row(at(6379, "::1", 2, Some("redis"), 700));
+        gone.closed_at = Some(Instant::now());
+        let groups = group_rows([&open, &gone]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 1);
+        assert!(!groups[0].is_closed());
+
+        // When every member has closed, the group is closed (shown red).
+        let mut gone2 = row(at(6379, "127.0.0.1", 3, Some("redis"), 700));
+        gone2.closed_at = Some(Instant::now());
+        let groups = group_rows([&gone, &gone2]);
+        assert_eq!(groups[0].members.len(), 2);
+        assert!(groups[0].is_closed());
+    }
+
+    #[test]
+    fn connections_are_never_merged() {
+        let mut a = entry(443, 1, Some("curl"), false);
+        let mut b = entry(443, 2, Some("curl"), false);
+        a.remote = "1.1.1.1:443".parse().unwrap();
+        b.remote = "1.1.1.1:443".parse().unwrap();
+        let (ra, rb) = (row(a), row(b));
+        assert_eq!(group_rows([&ra, &rb]).len(), 2);
+    }
+
+    #[test]
+    fn counts_use_merged_rows() {
+        let (now, wall) = t0();
+        let mut t = Tracker::default();
+        t.update(
+            vec![
+                at(6379, "127.0.0.1", 1, Some("redis"), 700),
+                at(6379, "::1", 2, Some("redis"), 700),
+                at(80, "0.0.0.0", 3, None, 0),
+                at(80, "::", 4, None, 0),
+            ],
+            now,
+            wall,
+        );
+        assert_eq!(t.listening_count(), 2);
+        assert_eq!(t.exposed_count(), 1);
+        assert_eq!(t.hidden_count(), 1);
     }
 
     #[test]

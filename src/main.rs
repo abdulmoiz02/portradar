@@ -1,10 +1,15 @@
 mod app;
+mod browser;
+mod config;
+mod free;
 mod inspect;
 mod kill;
 mod model;
 mod scanner;
 mod services;
+mod theme;
 mod ui;
+mod verdict;
 
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write as _};
@@ -16,8 +21,6 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
 
-/// How often the port table is refreshed.
-const SCAN_EVERY: Duration = Duration::from_secs(1);
 /// How often we check the keyboard (keeps keys responsive between scans).
 const POLL_EVERY: Duration = Duration::from_millis(100);
 
@@ -25,11 +28,14 @@ const HELP: &str = "\
 portwatch: monitor and manage the network ports on this machine
 
 USAGE:
-    portwatch            open the interactive dashboard
-    portwatch list       print listening ports and exit (no dashboard)
-    portwatch list --all include every connection, with its state
-    portwatch --help     show this help
-    portwatch --version  show the version
+    portwatch                open the interactive dashboard
+    portwatch list           print listening ports and exit (no dashboard)
+    portwatch list --all     include every connection, with its state
+    portwatch free <port>    find what uses a port, stop it (asks first),
+                             and check that the port is really free
+    portwatch config         show where the optional settings file lives
+    portwatch --help         show this help
+    portwatch --version      show the version
 
 Inside the dashboard press ? for the key list.";
 
@@ -38,6 +44,8 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => dashboard(),
         Some("list") => list(&args[1..]),
+        Some("free") => free::run(&args[1..]),
+        Some("config") => show_config(),
         Some("-h" | "--help" | "help") => {
             println!("{HELP}");
             ExitCode::SUCCESS
@@ -59,6 +67,8 @@ fn dashboard() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    let loaded = config::load();
+
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(err) => {
@@ -66,7 +76,7 @@ fn dashboard() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, &loaded);
     // Always give the terminal back, even if the loop failed.
     let restored = ratatui::try_restore();
 
@@ -77,10 +87,29 @@ fn dashboard() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
-    let mut app = App::new(nix::unistd::geteuid().is_root());
+/// The account "mine" means: the person at the keyboard, even under sudo.
+fn current_user(is_root: bool) -> String {
+    if is_root {
+        if let Some(name) = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty()) {
+            return name;
+        }
+    }
+    nix::unistd::User::from_uid(nix::unistd::geteuid())
+        .ok()
+        .flatten()
+        .map(|u| u.name)
+        .unwrap_or_default()
+}
+
+fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()> {
+    let is_root = nix::unistd::geteuid().is_root();
+    let mut app = App::new(is_root, current_user(is_root)).with_look(loaded.config.look());
+    let scan_every = loaded.config.refresh();
     app.rescan();
-    app.welcome();
+    match &loaded.warning {
+        Some(warning) => app.set_status(warning.clone(), true),
+        None => app.welcome(),
+    }
     let mut last_scan = Instant::now();
 
     while !app.should_quit {
@@ -94,7 +123,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
             }
         }
 
-        let due = last_scan.elapsed() >= SCAN_EVERY;
+        let due = last_scan.elapsed() >= scan_every;
         if app.rescan_now || (due && !app.paused) {
             app.rescan();
             app.rescan_now = false;
@@ -102,6 +131,27 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `portwatch config`: say where the optional settings file goes and what
+/// it can contain. portwatch only reads it; it never creates the file.
+fn show_config() -> ExitCode {
+    let loaded = config::load();
+    match &loaded.path {
+        Some(path) => {
+            println!("Settings file: {}", path.display());
+            println!(
+                "{}",
+                if path.exists() { "(found)" } else { "(not created yet; defaults are used)" }
+            );
+        }
+        None => println!("Settings file: unknown (HOME is not set)"),
+    }
+    if let Some(warning) = &loaded.warning {
+        println!("Problem: {warning}");
+    }
+    println!("\nCreate it with these lines (all optional):\n\n{}", config::SAMPLE);
+    ExitCode::SUCCESS
 }
 
 fn list(args: &[String]) -> ExitCode {

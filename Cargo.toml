@@ -10,3 +10,5 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 nix = { version = "0.31.3", features = ["signal", "user"] }
 procfs = "0.18.0"
 ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.1"
