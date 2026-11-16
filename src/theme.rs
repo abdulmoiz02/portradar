@@ -89,6 +89,12 @@ pub struct Theme {
     pub select_fg: Color,
     /// Background washes for the radar's fading sweep, faint to strong.
     pub wake: [Color; 3],
+    /// Radar line colours: the two inner rings and the outer ring.
+    pub ring: [Color; 2],
+    /// Radar bearing ticks: the short ones and the long ones.
+    pub tick: [Color; 2],
+    /// The radar's sweep beam.
+    pub beam: Color,
     /// The same glow as a smooth gradient (faintest, strongest) for terminals
     /// that support 24-bit colour.
     pub wake_rgb: [(u8, u8, u8); 2],
@@ -111,7 +117,10 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
-                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(28)],
+                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(22)],
+                ring: [Color::Indexed(29), Color::Indexed(35)],
+                tick: [Color::Indexed(22), Color::Indexed(35)],
+                beam: Color::Indexed(121),
                 wake_rgb: [(22, 48, 34), (40, 92, 64)],
             },
             ThemeName::Light => Theme {
@@ -128,7 +137,10 @@ impl Theme {
                 chip_fg: Color::Black,
                 select_bg: Color::Indexed(153),
                 select_fg: Color::Black,
-                wake: [Color::Indexed(194), Color::Indexed(157), Color::Indexed(120)],
+                wake: [Color::Indexed(194), Color::Indexed(194), Color::Indexed(194)],
+                ring: [Color::Indexed(244), Color::Indexed(240)],
+                tick: [Color::Indexed(244), Color::Indexed(240)],
+                beam: Color::Blue,
                 wake_rgb: [(228, 246, 232), (186, 228, 198)],
             },
             ThemeName::Nord => Theme {
@@ -145,7 +157,10 @@ impl Theme {
                 chip_fg: Color::Indexed(253),
                 select_bg: Color::Indexed(60),
                 select_fg: Color::Indexed(255),
-                wake: [Color::Indexed(23), Color::Indexed(23), Color::Indexed(30)],
+                wake: [Color::Indexed(23), Color::Indexed(23), Color::Indexed(23)],
+                ring: [Color::Indexed(60), Color::Indexed(146)],
+                tick: [Color::Indexed(60), Color::Indexed(146)],
+                beam: Color::Indexed(110),
                 wake_rgb: [(26, 50, 58), (40, 88, 100)],
             },
             ThemeName::Dracula => Theme {
@@ -162,7 +177,10 @@ impl Theme {
                 chip_fg: Color::Indexed(255),
                 select_bg: Color::Indexed(60),
                 select_fg: Color::Indexed(255),
-                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(54)],
+                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(53)],
+                ring: [Color::Indexed(60), Color::Indexed(103)],
+                tick: [Color::Indexed(60), Color::Indexed(103)],
+                beam: Color::Indexed(141),
                 wake_rgb: [(44, 30, 64), (84, 52, 124)],
             },
             ThemeName::Cyberpunk => Theme {
@@ -179,7 +197,10 @@ impl Theme {
                 chip_fg: Color::Indexed(219),
                 select_bg: Color::Indexed(54),
                 select_fg: Color::Indexed(231),
-                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(89)],
+                wake: [Color::Indexed(53), Color::Indexed(53), Color::Indexed(53)],
+                ring: [Color::Indexed(90), Color::Indexed(140)],
+                tick: [Color::Indexed(90), Color::Indexed(140)],
+                beam: Color::Indexed(201),
                 wake_rgb: [(58, 22, 70), (104, 30, 104)],
             },
             ThemeName::Matrix => Theme {
@@ -196,7 +217,10 @@ impl Theme {
                 chip_fg: Color::Indexed(46),
                 select_bg: Color::Indexed(22),
                 select_fg: Color::Indexed(82),
-                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(28)],
+                wake: [Color::Indexed(22), Color::Indexed(22), Color::Indexed(22)],
+                ring: [Color::Indexed(28), Color::Indexed(34)],
+                tick: [Color::Indexed(22), Color::Indexed(34)],
+                beam: Color::Indexed(120),
                 wake_rgb: [(8, 46, 18), (18, 92, 34)],
             },
             ThemeName::ColorBlind => Theme {
@@ -213,7 +237,10 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
-                wake: [Color::Indexed(17), Color::Indexed(17), Color::Indexed(18)],
+                wake: [Color::Indexed(17), Color::Indexed(17), Color::Indexed(17)],
+                ring: [Color::DarkGray, Color::Gray],
+                tick: [Color::DarkGray, Color::Gray],
+                beam: Color::Indexed(75),
                 wake_rgb: [(20, 36, 66), (30, 62, 112)],
             },
             ThemeName::Mono => Theme {
@@ -230,7 +257,10 @@ impl Theme {
                 chip_fg: Color::White,
                 select_bg: Color::Indexed(238),
                 select_fg: Color::White,
-                wake: [Color::Indexed(236), Color::Indexed(238), Color::Indexed(240)],
+                wake: [Color::Indexed(236), Color::Indexed(236), Color::Indexed(236)],
+                ring: [Color::DarkGray, Color::Gray],
+                tick: [Color::DarkGray, Color::Gray],
+                beam: Color::White,
                 wake_rgb: [(44, 44, 44), (78, 78, 78)],
             },
         }
@@ -443,6 +473,18 @@ mod tests {
         }
         let look = Look { truecolor: true, ..Look::new(ThemeName::Default, true) };
         assert!(look.with_theme(ThemeName::Dracula).truecolor && look.with_theme(ThemeName::Dracula).ascii);
+    }
+
+    #[test]
+    fn the_default_scope_is_phosphor_green_and_every_theme_has_a_visible_beam() {
+        let t = Theme::named(ThemeName::Default);
+        assert_eq!(t.beam, Color::Indexed(121), "light green beam");
+        assert!(matches!(t.ring[0], Color::Indexed(28..=35)) && matches!(t.ring[1], Color::Indexed(28..=40)));
+        for theme in ThemeName::ALL {
+            let t = Theme::named(theme);
+            assert_ne!(t.beam, t.ring[0], "{theme:?}: the beam stands out from the rings");
+            assert_ne!(t.ring[0], t.wake[0], "{theme:?}: rings are visible over the glow");
+        }
     }
 
     #[test]

@@ -1733,13 +1733,15 @@ fn shape_style(shape: radar::Shape, look: &Look) -> Style {
     use radar::Shape;
     let t = &look.theme;
     match shape {
-        Shape::Ring(2) | Shape::Tick(true) | Shape::Pulse => fg(t.subtle),
-        Shape::Ring(_) | Shape::Tick(false) => fg(t.dim),
+        Shape::Ring(2) | Shape::Pulse => fg(t.ring[1]),
+        Shape::Ring(_) => fg(t.ring[0]),
+        Shape::Tick(true) => fg(t.tick[1]),
+        Shape::Tick(false) => fg(t.tick[0]),
         Shape::Bracket => fg(t.select_fg).bold(),
         Shape::Ripple | Shape::Echo(1) => fg(t.good),
-        Shape::Echo(2) => fg(t.accent),
-        Shape::Echo(_) => fg(t.dim),
-        Shape::Beam => fg(t.accent).bold(),
+        Shape::Echo(2) => fg(t.beam),
+        Shape::Echo(_) => fg(t.ring[0]),
+        Shape::Beam => fg(t.beam).bold(),
     }
 }
 
