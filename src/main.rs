@@ -1,8 +1,10 @@
 mod app;
 mod browser;
 mod config;
+mod clip;
 mod free;
 mod inspect;
+mod inspector;
 mod kill;
 mod model;
 mod palette;
@@ -37,6 +39,8 @@ USAGE:
     portwatch list --all     include every connection, with its state
     portwatch free <port>    find what uses a port, stop it (asks first),
                              and check that the port is really free
+    portwatch inspect <port> show everything about the program using a port
+                             (add --json for JSON you can pipe anywhere)
     portwatch config         show where the optional settings file lives
     portwatch --help         show this help
     portwatch --version      show the version
@@ -49,6 +53,7 @@ fn main() -> ExitCode {
         None => dashboard(),
         Some("list") => list(&args[1..]),
         Some("free") => free::run(&args[1..]),
+        Some("inspect") => inspector::run_cli(&args[1..]),
         Some("config") => show_config(),
         Some("-h" | "--help" | "help") => {
             println!("{HELP}");
@@ -155,6 +160,15 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
                     break;
                 }
             }
+        }
+
+        // Answers from background work, and a clipboard escape code if no
+        // clipboard program was found.
+        app.tick();
+        if let Some(sequence) = app.take_osc52() {
+            let mut out = io::stdout();
+            let _ = out.write_all(sequence.as_bytes());
+            let _ = out.flush();
         }
 
         let due = last_scan.elapsed() >= scan_every;

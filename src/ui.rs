@@ -11,9 +11,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Clear, Paragraph, Row as TableRow, Table, Tabs, Wrap};
 
-use crate::app::{App, KillRequest, Mode, PaletteState, TOUR_STEPS, Tab};
+use crate::app::{App, InspectorState, InspectorTab, KillRequest, Mode, PaletteState, TOUR_STEPS, Tab};
 use crate::browser;
 use crate::inspect::{human_duration, short_duration};
+use crate::inspector::{self, Snapshot};
 use crate::model::{EventKind, Group, RowState};
 use crate::palette;
 use crate::services::{Access, service_name};
@@ -24,6 +25,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let now = Instant::now();
     let area = frame.area();
     let look = app.look;
+
+    // The Inspector replaces the whole screen. Take its state out while
+    // drawing so the rest of `app` can be read freely.
+    if matches!(app.mode, Mode::Inspector(_)) {
+        let mut mode = std::mem::replace(&mut app.mode, Mode::Normal);
+        if let Mode::Inspector(state) = &mut mode {
+            render_inspector(frame, app, &look, state, area);
+        }
+        app.mode = mode;
+        return;
+    }
 
     // Short or narrow terminals drop the optional parts: first the summary
     // cards, then the details panel.
@@ -202,10 +214,11 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
     let table_rows: Vec<TableRow> = groups
         .iter()
         .map(|grp| {
-            let cells = if listening {
-                listening_cells(grp, &app.me, look)
-            } else {
-                connection_cells(grp, look)
+            let cells = match (listening, app.technical) {
+                (true, false) => listening_cells(grp, &app.me, look),
+                (true, true) => technical_listening_cells(grp, &app.me, look),
+                (false, false) => connection_cells(grp, look),
+                (false, true) => technical_connection_cells(grp, look),
             };
             let style = match grp.state(now) {
                 RowState::New => fg(t.good).bold(),
@@ -243,6 +256,12 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
         )
     };
 
+    let (header, widths) = if app.technical {
+        technical_columns(listening)
+    } else {
+        (header, widths)
+    };
+
     let mut title = vec![
         Span::styled(
             if listening { " Listening ports " } else { " Connections " },
@@ -260,6 +279,9 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
     ];
     for name in app.active_filters() {
         title.push(Span::styled(format!("{} {name} ", g.dot), fg(t.warn)));
+    }
+    if app.technical {
+        title.push(Span::styled(format!("{} technical view ", g.dot), fg(t.warn)));
     }
     if !app.filter.is_empty() {
         title.push(Span::styled(
@@ -645,8 +667,10 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             ("?".into(), "Help", false),
             ("q".into(), "Quit", false),
             (":".into(), "Menu", false),
+            ("Enter".into(), "Inspect", false),
             (tabs, "Tabs", false),
             ("m".into(), "Mine", app.only_mine),
+            ("t".into(), "Tech", app.technical),
             ("s".into(), "Sort", false),
             ("p".into(), "Pause", app.paused),
         ],
@@ -661,6 +685,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
                 ("?".into(), "Help", false),
                 ("q".into(), "Quit", false),
                 (":".into(), "Menu", false),
+                ("Enter".into(), "Inspect", false),
                 ("k".into(), "Stop", false),
                 ("f".into(), "Free", false),
             ];
@@ -670,6 +695,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             keys.push(("e".into(), "Exposed", app.only_exposed));
             keys.push(("m".into(), "Mine", app.only_mine));
             keys.push(("h".into(), "Quiet", app.hide_noise));
+            keys.push(("t".into(), "Tech", app.technical));
             keys.push((tabs, "Tabs", false));
             keys.push(("s".into(), "Sort", false));
             keys.push(("p".into(), "Pause", app.paused));
@@ -692,24 +718,29 @@ fn render_footer(frame: &mut Frame, app: &App, look: &Look, area: Rect, now: Ins
         let color = if status.is_error { t.bad } else { t.good };
         Line::from(Span::styled(format!(" {} ", status.text), fg(color).bold()))
     } else {
-        let mut spans: Vec<Span> = Vec::new();
-        let mut width = 0usize;
-        for (key, what, active) in footer_keys(app, look) {
-            let needed = key.chars().count() + 2 + what.chars().count() + 3;
-            if width + needed > area.width as usize {
-                break;
-            }
-            width += needed;
-            spans.push(if active {
-                active_key_chip(&key, look)
-            } else {
-                key_chip(&key, look)
-            });
-            spans.push(Span::styled(format!(" {what}  "), fg(t.subtle)));
-        }
-        Line::from(spans)
+        fit_keys(footer_keys(app, look), area.width as usize, look)
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// As many key chips as fit in `width`, in priority order.
+fn fit_keys(keys: Vec<(String, &'static str, bool)>, width: usize, look: &Look) -> Line<'static> {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used = 0usize;
+    for (key, what, active) in keys {
+        let needed = key.chars().count() + 2 + what.chars().count() + 3;
+        if used + needed > width {
+            break;
+        }
+        used += needed;
+        spans.push(if active {
+            active_key_chip(&key, look)
+        } else {
+            key_chip(&key, look)
+        });
+        spans.push(Span::styled(format!(" {what}  "), fg(look.theme.subtle)));
+    }
+    Line::from(spans)
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -793,6 +824,8 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         ("o".into(), "open the port in your web browser (TCP only)"),
         ("e  m  h".into(), "show only exposed / only mine / hide system noise"),
         ("s  /  r".into(), "change the sort column / reverse it"),
+        ("Enter".into(), "inspect the program: full technical detail"),
+        ("t".into(), "switch between the simple and the technical table"),
         ("p".into(), "pause or resume refreshing"),
         (":  or  Ctrl+P".into(), "command menu: find any action by name"),
         ("q  /  Ctrl+C".into(), "quit"),
@@ -858,6 +891,531 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         ),
         popup,
     );
+}
+
+// ---- technical table -----------------------------------------------------
+
+fn technical_columns(listening: bool) -> (Vec<&'static str>, Vec<Constraint>) {
+    if listening {
+        (
+            vec!["", "PORT", "BIND", "STATE", "PID", "PROCESS", "USER", "INODE"],
+            vec![
+                Constraint::Length(1),
+                Constraint::Length(9),
+                Constraint::Min(15),
+                Constraint::Length(8),
+                Constraint::Length(7),
+                Constraint::Min(10),
+                Constraint::Min(6),
+                Constraint::Length(9),
+            ],
+        )
+    } else {
+        (
+            vec!["PROTO", "LOCAL", "REMOTE", "STATE", "PID", "PROCESS", "INODE"],
+            vec![
+                Constraint::Length(5),
+                Constraint::Min(15),
+                Constraint::Min(17),
+                Constraint::Length(11),
+                Constraint::Length(7),
+                Constraint::Min(8),
+                Constraint::Length(9),
+            ],
+        )
+    }
+}
+
+fn pid_cell(grp: &Group<'_>, look: &Look) -> Cell<'static> {
+    match grp.process() {
+        Some(p) => Cell::from(p.pid.to_string()),
+        None => Cell::from(Span::styled("-", fg(look.theme.dim))),
+    }
+}
+
+fn name_cell(grp: &Group<'_>, look: &Look) -> Cell<'static> {
+    match grp.process() {
+        Some(p) => Cell::from(Span::styled(p.name.clone(), Style::new().bold())),
+        None => Cell::from(Span::styled("?", fg(look.theme.dim))),
+    }
+}
+
+/// The kernel's socket id, plus how many more sockets are merged into the row.
+fn inode_cell(grp: &Group<'_>) -> Cell<'static> {
+    let first = grp.first().entry.inode;
+    if grp.members.len() > 1 {
+        Cell::from(format!("{first} +{}", grp.members.len() - 1))
+    } else {
+        Cell::from(first.to_string())
+    }
+}
+
+fn technical_listening_cells(grp: &Group<'_>, me: &str, look: &Look) -> Vec<Cell<'static>> {
+    let t = &look.theme;
+    let port = Cell::from(Line::from(vec![
+        Span::styled(grp.port().to_string(), Style::new().bold()),
+        Span::styled(format!("/{}", grp.protocol()), fg(t.dim)),
+    ]));
+    let bind = grp
+        .addresses()
+        .iter()
+        .map(|ip| ip.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![
+        marker_cell(verdict(grp, me), look),
+        port,
+        Cell::from(bind),
+        Cell::from(grp.first().entry.state.clone()),
+        pid_cell(grp, look),
+        name_cell(grp, look),
+        Cell::from(grp.user().to_string()),
+        inode_cell(grp),
+    ]
+}
+
+fn technical_connection_cells(grp: &Group<'_>, look: &Look) -> Vec<Cell<'static>> {
+    let t = &look.theme;
+    let e = &grp.first().entry;
+    let state_color = match e.state.as_str() {
+        "Established" => t.good,
+        "SynSent" | "SynRecv" | "CloseWait" => t.warn,
+        "TimeWait" | "FinWait1" | "FinWait2" | "LastAck" | "Closing" => t.dim,
+        _ => Color::Reset,
+    };
+    vec![
+        Cell::from(e.protocol.to_string()),
+        Cell::from(e.local.to_string()),
+        Cell::from(e.remote.to_string()),
+        Cell::from(Span::styled(e.state.clone(), fg(state_color))),
+        pid_cell(grp, look),
+        name_cell(grp, look),
+        inode_cell(grp),
+    ]
+}
+
+// ---- inspector -------------------------------------------------------------
+
+fn render_inspector(frame: &mut Frame, app: &App, look: &Look, state: &mut InspectorState, area: Rect) {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let [title, tabs, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    render_title_bar(frame, app, look, title, false);
+
+    let titles: Vec<String> = InspectorTab::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| format!("{} {}", i + 1, tab.label()))
+        .collect();
+    frame.render_widget(
+        Tabs::new(titles)
+            .select(state.tab.index())
+            .style(fg(t.dim))
+            .highlight_style(Style::new().bg(t.accent).fg(t.on_accent).bold())
+            .padding(" ", " ")
+            .divider(" "),
+        tabs,
+    );
+
+    // No wrapping inside the Inspector: every line is one row, so the
+    // scroll position is exact. Long lines are simply cut at the edge.
+    let lines = inspector_lines(app, state, look);
+    let snapshot = &state.snapshot;
+    let name = if snapshot.pid == 0 {
+        snapshot.name.clone()
+    } else {
+        format!("{} (PID {})", snapshot.name, snapshot.pid)
+    };
+    let mut block = look.block().border_style(fg(t.dim)).title(Line::from(vec![
+        Span::styled(format!(" {name} "), fg(t.accent).bold()),
+        Span::styled(format!("{} {} ", g.dot, state.tab.label()), fg(t.dim)),
+    ]));
+    let inner = block.inner(body);
+    let visible = inner.height as usize;
+    state.scroll = state.scroll.min(lines.len().saturating_sub(visible));
+    if lines.len() > visible {
+        let last = (state.scroll + visible).min(lines.len());
+        block = block.title_bottom(
+            Line::styled(
+                format!(" lines {}-{} of {} ", state.scroll + 1, last, lines.len()),
+                fg(t.dim),
+            )
+            .right_aligned(),
+        );
+    }
+    frame.render_widget(block, body);
+    frame.render_widget(Paragraph::new(lines).scroll((state.scroll as u16, 0)), inner);
+
+    let footer_line = if let Some(status) = app.status_text(Instant::now()) {
+        let color = if status.is_error { t.bad } else { t.good };
+        Line::from(Span::styled(format!(" {} ", status.text), fg(color).bold()))
+    } else {
+        let mut keys: Vec<(String, &'static str, bool)> = vec![
+            ("Esc".into(), "Back", false),
+            (g.keys_tabs.to_string(), "Tabs", false),
+            (g.keys_move.to_string(), "Scroll", false),
+            ("y".into(), "Copy JSON", false),
+        ];
+        match state.tab {
+            InspectorTab::Sockets => keys.push(("r".into(), "Names", false)),
+            InspectorTab::Env => keys.push(("v".into(), "Reveal", state.reveal_env)),
+            _ => {}
+        }
+        if !state.snapshot.exited {
+            keys.push(("k".into(), "Stop", false));
+            keys.push(("f".into(), "Free", false));
+            keys.push(("o".into(), "Open", false));
+        }
+        fit_keys(keys, footer.width as usize, look)
+    };
+    frame.render_widget(Paragraph::new(footer_line), footer);
+}
+
+fn inspector_lines(app: &App, state: &InspectorState, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if state.snapshot.exited {
+        lines.push(Line::styled(
+            format!("{} This program has exited. This is how it looked a moment ago.", g.warn),
+            fg(t.warn).bold(),
+        ));
+        lines.push(Line::from(""));
+    }
+    lines.extend(match state.tab {
+        InspectorTab::Overview => overview_lines(app, state, look),
+        InspectorTab::Process => process_lines(&state.snapshot, look),
+        InspectorTab::Sockets => sockets_lines(app, &state.snapshot, look),
+        InspectorTab::Origin => origin_lines(&state.snapshot, look),
+        InspectorTab::Env => env_lines(state, look),
+        InspectorTab::Raw => raw_lines(&state.snapshot, look),
+    });
+    lines
+}
+
+fn kv_line(label: &str, value: String, look: &Look) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<14}"), fg(look.theme.accent).bold()),
+        Span::raw(value),
+    ])
+}
+
+fn heading(text: &str, look: &Look) -> Line<'static> {
+    Line::styled(text.to_string(), fg(look.theme.accent).bold())
+}
+
+/// Text from /proc, one line each, with tabs turned into spaces.
+fn text_lines(text: &str, style: Style) -> Vec<Line<'static>> {
+    text.lines()
+        .map(|l| Line::styled(l.replace('\t', "    ").trim_end().to_string(), style))
+        .collect()
+}
+
+fn overview_lines(app: &App, state: &InspectorState, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let snap = &state.snapshot;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    match &snap.process {
+        Some(p) => lines.push(Line::from(vec![
+            Span::styled(p.name.clone(), Style::new().bold()),
+            Span::raw(format!(" (PID {})", p.pid)),
+            Span::styled(format!("  run by {}", p.user), fg(t.dim)),
+        ])),
+        None => lines.push(Line::from(vec![
+            Span::styled("A hidden program", Style::new().bold()),
+            Span::raw(": it belongs to another user, so its details cannot be read."),
+        ])),
+    }
+
+    match app.find_group(&state.key) {
+        Some(grp) if grp.listening() => {
+            let addresses: Vec<String> = grp.addresses().iter().map(|ip| ip.to_string()).collect();
+            lines.push(Line::from(format!(
+                "Listening on port {}/{} at {}.",
+                grp.port(),
+                grp.protocol(),
+                addresses.join(", ")
+            )));
+            let access = grp.access();
+            let color = if access.is_exposed() { t.warn } else { t.good };
+            let mut sentence = vec![Span::styled(access.sentence(grp.first().entry.local.ip()), fg(color))];
+            if let Some(note) = exposure_note(&grp) {
+                sentence.push(Span::styled(format!(" {note}"), fg(t.dim)));
+            }
+            lines.push(Line::from(sentence));
+
+            let v = verdict(&grp, &app.me);
+            let (glyph, color) = match v.level {
+                Level::Normal => (g.normal, t.good),
+                Level::Dev => (g.dev, t.accent),
+                Level::Check => (g.warn, t.warn),
+                Level::Unknown => ("?", t.dim),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{glyph} {}: ", level_label(v.level)), fg(color).bold()),
+                Span::styled(v.reason, fg(t.subtle)),
+            ]));
+            if let Some(name) = service_name(grp.protocol(), grp.port()) {
+                lines.push(Line::styled(
+                    format!("Port {} is usually {name} (a guess from the number).", grp.port()),
+                    fg(t.subtle),
+                ));
+            }
+        }
+        Some(grp) => {
+            let e = &grp.first().entry;
+            lines.push(Line::from(format!(
+                "A {} connection between {} and {}.",
+                e.state.to_lowercase(),
+                e.local,
+                e.remote
+            )));
+        }
+        None => lines.push(Line::styled(
+            "The row this was opened from has closed.",
+            fg(t.bad),
+        )),
+    }
+    lines.push(Line::from(""));
+
+    if let Some(p) = &snap.process {
+        let rows = inspector::process_rows(p);
+        for label in ["Started", "Memory", "Threads", "Open files"] {
+            if let Some((l, v)) = rows.iter().find(|(l, _)| *l == label) {
+                lines.push(kv_line(l, v.clone(), look));
+            }
+        }
+    }
+    let listening = snap.sockets.iter().filter(|s| s.listening).count();
+    lines.push(kv_line(
+        "Sockets",
+        format!("{listening} listening, {} connections", snap.sockets.len() - listening),
+        look,
+    ));
+    if let Some(unit) = &snap.origin.systemd_unit {
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::Systemd(unit.clone()).advice()),
+            fg(t.warn),
+        ));
+    }
+    if let Some(id) = &snap.origin.container_id {
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::Container(id.clone()).advice()),
+            fg(t.warn),
+        ));
+    }
+    if snap.origin.docker_proxy {
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::DockerProxy.advice()),
+            fg(t.warn),
+        ));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(heading("Where to look next", look));
+    for (tab, what) in [
+        ("2 Process", "memory, CPU, who started it, the full command line"),
+        ("3 Sockets", "every socket it has, with queue sizes (r looks up host names)"),
+        ("4 Origin", "systemd service or Docker container, and the raw cgroup paths"),
+        ("5 Env", "its environment variables (values hidden until you press v)"),
+        ("6 Raw", "the exact /proc text this screen is built from, and the JSON"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{tab:<12}"), fg(t.accent)),
+            Span::raw(what),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "y copies this as JSON. k stops it, f frees the port, o opens it: these close the Inspector first.",
+        fg(t.dim),
+    ));
+    lines
+}
+
+fn process_lines(snap: &Snapshot, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let Some(p) = &snap.process else {
+        return vec![
+            Line::from("The details of this program are not readable: it belongs to another user."),
+            Line::from(vec![
+                Span::raw("Run "),
+                Span::styled("sudo \"$(which portwatch)\"", fg(t.accent).bold()),
+                Span::raw(" to see them."),
+            ]),
+        ];
+    };
+    let mut lines: Vec<Line<'static>> = inspector::process_rows(p)
+        .into_iter()
+        .map(|(label, value)| kv_line(label, value, look))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(heading("Command line, one argument per line", look));
+    if p.command_line.is_empty() {
+        lines.push(Line::styled("(empty: kernel threads and some system programs have none)", fg(t.dim)));
+    }
+    for (i, arg) in p.command_line.iter().enumerate() {
+        let arg: String = arg.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!("[{i}] "), fg(t.dim)),
+            Span::raw(arg),
+        ]));
+    }
+    lines
+}
+
+fn sockets_lines(app: &App, snap: &Snapshot, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    if snap.sockets.is_empty() {
+        return vec![Line::styled("This program has no open sockets right now.", fg(t.dim))];
+    }
+    let mut lines = vec![Line::styled(
+        format!(
+            "{:<4} {:<11} {:<21} {:<21} QUEUES    INODE",
+            "PROTO", "STATE", "LOCAL", "REMOTE"
+        ),
+        fg(t.dim).bold(),
+    )];
+    let mut resolvable = false;
+    for s in &snap.sockets {
+        let ip = s.remote.parse::<std::net::SocketAddr>().ok().map(|a| a.ip());
+        let host = ip
+            .filter(|_| !s.listening)
+            .and_then(|ip| app.hosts.get(&ip))
+            .and_then(|h| h.as_deref());
+        if !s.listening && ip.is_some_and(|ip| !ip.is_loopback() && !ip.is_unspecified()) {
+            resolvable = true;
+        }
+        let style = if s.listening { fg(t.good) } else { Style::new() };
+        lines.push(Line::styled(inspector::socket_line(s, host), style));
+    }
+    if resolvable {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Press r to look up host names for the remote addresses. This sends them to your DNS resolver.",
+            fg(t.dim),
+        ));
+    }
+    lines
+}
+
+fn origin_lines(snap: &Snapshot, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let o = &snap.origin;
+    let mut known = false;
+    if let Some(unit) = &o.systemd_unit {
+        known = true;
+        lines.push(kv_line("systemd unit", unit.clone(), look));
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::Systemd(unit.clone()).advice()),
+            fg(t.warn),
+        ));
+    }
+    if let Some(id) = &o.container_id {
+        known = true;
+        lines.push(kv_line("container", id.clone(), look));
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::Container(id.clone()).advice()),
+            fg(t.warn),
+        ));
+        lines.push(Line::styled(
+            format!("For the image and ports, run: docker inspect {id}"),
+            fg(t.dim),
+        ));
+    }
+    if o.docker_proxy {
+        known = true;
+        lines.push(Line::styled(
+            format!("{} {}", g.warn, crate::inspect::Hint::DockerProxy.advice()),
+            fg(t.warn),
+        ));
+    }
+    if !known {
+        lines.push(Line::from(
+            "Not a systemd service or a Docker container: it was started by a person or a desktop session.",
+        ));
+    }
+    lines.push(Line::from(""));
+    lines.push(heading("Control groups (from /proc/PID/cgroup)", look));
+    if o.cgroup.is_empty() {
+        lines.push(Line::styled("(not readable)", fg(t.dim)));
+    }
+    for path in &o.cgroup {
+        lines.push(Line::from(path.clone()));
+    }
+    lines
+}
+
+fn env_lines(state: &InspectorState, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let Some(env) = &state.snapshot.env else {
+        return vec![
+            Line::from("The environment of this program is not readable: it belongs to another user."),
+            Line::styled("Environment variables are never included in the JSON or the Raw tab.", fg(t.dim)),
+        ];
+    };
+    let mut lines = vec![
+        if state.reveal_env {
+            Line::styled(
+                format!("{} Values are visible. They may contain passwords or keys. Press v to hide them.", g.warn),
+                fg(t.warn).bold(),
+            )
+        } else {
+            Line::styled(
+                "Values are hidden because they often contain passwords or keys. Press v to show them.",
+                fg(t.dim),
+            )
+        },
+        Line::styled(
+            format!("{} variables. They are never included in the JSON or the Raw tab.", env.len()),
+            fg(t.dim),
+        ),
+        Line::from(""),
+    ];
+    for (name, value) in env {
+        let shown: String = if state.reveal_env {
+            value
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .take(300)
+                .collect()
+        } else {
+            // A fixed-length mask, so the length of the value is not given away.
+            g.mask.repeat(8)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(name.clone(), fg(t.accent)),
+            Span::raw("="),
+            Span::raw(shown),
+        ]));
+    }
+    lines
+}
+
+fn raw_lines(snap: &Snapshot, look: &Look) -> Vec<Line<'static>> {
+    let t = &look.theme;
+    let mut lines = vec![
+        heading("JSON (what y copies; it has no environment but does include the command line)", look),
+    ];
+    lines.extend(text_lines(&inspector::to_json(snap), Style::new()));
+    for (title, text) in &snap.raw {
+        lines.push(Line::from(""));
+        lines.push(heading(title, look));
+        lines.extend(text_lines(text, fg(t.subtle)));
+    }
+    lines
 }
 
 fn render_palette(frame: &mut Frame, look: &Look, state: &PaletteState, area: Rect) {
@@ -976,6 +1534,7 @@ fn render_tour(frame: &mut Frame, look: &Look, step: usize, area: Rect) {
                 key("k", "stop the selected program (asks first)"),
                 key("f", "free a port: stop its program and check it is free"),
                 key("o", "open a port in your web browser"),
+                key("Enter", "inspect: full technical detail on a program"),
                 key(":", "command menu: find any action by name"),
                 key("?", "all keys, and what the columns mean"),
                 key("q", "quit"),
@@ -1364,9 +1923,10 @@ mod tests {
         assert!(screen.contains("No matching command"), "{screen}");
 
         // A long result list keeps the highlighted entry on screen.
-        app.mode = Mode::Palette(PaletteState { input: String::new(), selected: 20 });
+        let last = palette::COMMANDS.len() - 1;
+        app.mode = Mode::Palette(PaletteState { input: String::new(), selected: last });
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("Quit portwatch") || screen.contains("welcome tour"), "{screen}");
+        assert!(screen.contains("Quit portwatch"), "{screen}");
     }
 
     #[test]
@@ -1439,6 +1999,276 @@ mod tests {
         assert_eq!(app.tab, Tab::Connections);
     }
 
+    fn press(app: &mut App, code: ratatui::crossterm::event::KeyCode) {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn app_inspecting_ourselves() -> App {
+        let mut app = new_app(false);
+        app.tracker.update(
+            vec![entry(3000, 1, "portwatch", std::process::id())],
+            Instant::now(),
+            SystemTime::now(),
+        );
+        select_first(&mut app);
+        press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Inspector(_)));
+        app
+    }
+
+    fn go_to(app: &mut App, tab_digit: char) {
+        press(app, ratatui::crossterm::event::KeyCode::Char(tab_digit));
+    }
+
+    #[test]
+    fn every_inspector_tab_renders_at_80x24_and_in_ascii_mode() {
+        let expectations = [
+            ('1', "Where to look next"),
+            ('2', "Command line, one argument per line"),
+            ('3', "PROTO"),
+            ('4', "Control groups"),
+            ('5', "variables"),
+            ('6', "JSON (what y copies"),
+        ];
+        for ascii in [false, true] {
+            let mut app = app_inspecting_ourselves();
+            if ascii {
+                app.look = Look::new(ThemeName::Default, true);
+            }
+            for (digit, expected) in expectations {
+                go_to(&mut app, digit);
+                let screen = draw(&mut app, 80, 24);
+                assert!(screen.contains(expected), "tab {digit} (ascii {ascii}) missing {expected:?}:\n{screen}");
+                assert!(screen.contains("Esc"), "footer missing on tab {digit}:\n{screen}");
+                if ascii {
+                    assert!(screen.is_ascii(), "tab {digit} is not ASCII:\n{screen}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_inspector_survives_tiny_terminals_on_every_tab() {
+        let mut app = app_inspecting_ourselves();
+        for digit in ['1', '2', '3', '4', '5', '6'] {
+            go_to(&mut app, digit);
+            for (w, h) in [(20, 5), (1, 1), (60, 3), (200, 60), (30, 8)] {
+                let _ = draw(&mut app, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn the_inspector_works_for_hidden_owners_connections_and_exited_programs() {
+        // Hidden owner.
+        let mut hidden = new_app(false);
+        let mut h = entry(631, 3, "x", 1);
+        h.process = None;
+        hidden.tracker.update(vec![h], Instant::now(), SystemTime::now());
+        select_first(&mut hidden);
+        press(&mut hidden, ratatui::crossterm::event::KeyCode::Enter);
+        let overview = draw(&mut hidden, 100, 30);
+        assert!(overview.contains("A hidden program"), "{overview}");
+        go_to(&mut hidden, '2');
+        assert!(draw(&mut hidden, 100, 30).contains("not readable"));
+        go_to(&mut hidden, '5');
+        assert!(draw(&mut hidden, 100, 30).contains("not readable"));
+        go_to(&mut hidden, '3');
+        assert!(draw(&mut hidden, 100, 30).contains("127.0.0.1:631"));
+
+        // A connection row.
+        let mut conn_app = new_app(false);
+        let mut conn = entry(3000, 4, "portwatch", std::process::id());
+        conn.listening = false;
+        conn.state = "Established".into();
+        conn.remote = "10.20.30.40:55555".parse().unwrap();
+        conn_app.tracker.update(vec![conn], Instant::now(), SystemTime::now());
+        press(&mut conn_app, ratatui::crossterm::event::KeyCode::Char('2'));
+        press(&mut conn_app, ratatui::crossterm::event::KeyCode::Enter);
+        let screen = draw(&mut conn_app, 100, 30);
+        assert!(screen.contains("established connection"), "{screen}");
+
+        // A program that is already gone.
+        let mut gone = new_app(false);
+        gone.tracker.update(
+            vec![entry(3000, 1, "ghost", 4_000_000)],
+            Instant::now(),
+            SystemTime::now(),
+        );
+        select_first(&mut gone);
+        press(&mut gone, ratatui::crossterm::event::KeyCode::Enter);
+        let screen = draw(&mut gone, 100, 30);
+        assert!(screen.contains("has exited"), "{screen}");
+        assert!(!screen.contains("Stop"), "actions are not offered for an exited program:\n{screen}");
+    }
+
+    #[test]
+    fn the_inspector_footer_offers_the_keys_that_fit_each_tab() {
+        let mut app = app_inspecting_ourselves();
+        let footer = |app: &mut App| draw(app, 140, 30).lines().last().unwrap().to_string();
+        let f = footer(&mut app);
+        for expected in ["Back", "Tabs", "Scroll", "Copy JSON", "Stop", "Free", "Open"] {
+            assert!(f.contains(expected), "missing {expected:?}: {f}");
+        }
+        go_to(&mut app, '3');
+        assert!(footer(&mut app).contains("Names"));
+        go_to(&mut app, '5');
+        assert!(footer(&mut app).contains("Reveal"));
+    }
+
+    #[test]
+    fn environment_values_are_masked_until_revealed_and_never_leak_elsewhere() {
+        use ratatui::crossterm::event::KeyCode;
+        // A clean environment with only the secret, so it is on the first screen.
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .env_clear()
+            .env("PORTWATCH_TEST_SECRET", "hunter2-super-secret")
+            .spawn()
+            .unwrap();
+        for _ in 0..200 {
+            let comm = std::fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
+            if comm.trim_end() == "sleep" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut app = new_app(false);
+        app.tracker.update(
+            vec![entry(3000, 1, "sleep", child.id())],
+            Instant::now(),
+            SystemTime::now(),
+        );
+        select_first(&mut app);
+        press(&mut app, KeyCode::Enter);
+
+        let secret = "hunter2";
+        // Nothing on the Overview, Process, Sockets, Origin or Raw tabs.
+        for digit in ['1', '2', '3', '4', '6'] {
+            go_to(&mut app, digit);
+            for (w, h) in [(100, 30), (80, 24)] {
+                let screen = draw(&mut app, w, h);
+                assert!(!screen.contains(secret), "secret leaked on tab {digit}:\n{screen}");
+                assert!(!screen.contains("PORTWATCH_TEST_SECRET"), "variable name leaked on tab {digit}");
+            }
+        }
+        // The Raw tab scrolled all the way down shows nothing either.
+        press(&mut app, KeyCode::End);
+        assert!(!draw(&mut app, 100, 30).contains(secret));
+
+        // Env tab: names visible, values masked.
+        go_to(&mut app, '5');
+        let masked = draw(&mut app, 100, 30);
+        assert!(masked.contains("PORTWATCH_TEST_SECRET="), "{masked}");
+        assert!(!masked.contains(secret), "value shown without asking:\n{masked}");
+        assert!(masked.contains("\u{2022}"), "mask glyph expected:\n{masked}");
+
+        // Revealed on request only.
+        press(&mut app, KeyCode::Char('v'));
+        let revealed = draw(&mut app, 100, 30);
+        assert!(revealed.contains("hunter2-super-secret"), "{revealed}");
+        assert!(revealed.contains("passwords or keys"), "a warning is shown while revealed");
+
+        // Leaving the tab hides them again.
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Left);
+        assert!(!draw(&mut app, 100, 30).contains(secret));
+
+        // ASCII mode masks with an ASCII character.
+        app.look = Look::new(ThemeName::Default, true);
+        let ascii = draw(&mut app, 100, 30);
+        assert!(ascii.is_ascii() && ascii.contains("********") && !ascii.contains(secret), "{ascii}");
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn long_inspector_content_scrolls_exactly_without_wrapping() {
+        use ratatui::crossterm::event::KeyCode;
+        // 80 arguments make an 81-line command list, longer than the screen.
+        let mut cmd = std::process::Command::new("sleep");
+        for _ in 0..80 {
+            cmd.arg("60");
+        }
+        let mut child = cmd.spawn().unwrap();
+        for _ in 0..200 {
+            let comm = std::fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
+            if comm.trim_end() == "sleep" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut app = new_app(false);
+        app.tracker.update(
+            vec![entry(3000, 1, "sleep", child.id())],
+            Instant::now(),
+            SystemTime::now(),
+        );
+        select_first(&mut app);
+        press(&mut app, KeyCode::Enter);
+        go_to(&mut app, '2');
+
+        let top = draw(&mut app, 100, 24);
+        assert!(top.contains("lines 1-"), "scroll indicator at the top:\n{top}");
+        assert!(top.contains("[0] sleep"), "{top}");
+        assert!(!top.contains("[80]"), "later lines are off screen:\n{top}");
+
+        press(&mut app, KeyCode::End);
+        let bottom = draw(&mut app, 100, 24);
+        assert!(bottom.contains("[80] 60"), "last line visible after End:\n{bottom}");
+        assert!(!bottom.contains("[0] sleep"), "{bottom}");
+        // The indicator's last line number equals the total: the clamp is exact.
+        let indicator = bottom.lines().find(|l| l.contains(" of ")).expect("indicator");
+        let numbers: Vec<usize> = indicator
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse().unwrap())
+            .collect();
+        assert_eq!(numbers[1], numbers[2], "ends exactly on the last line: {indicator}");
+
+        // Scrolling further changes nothing.
+        press(&mut app, KeyCode::PageDown);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(draw(&mut app, 100, 24), bottom);
+
+        // A narrow terminal cuts lines instead of wrapping them (same line count).
+        let narrow_total = {
+            let screen = draw(&mut app, 30, 24);
+            let line = screen.lines().find(|l| l.contains(" of ")).map(str::to_string);
+            line.map(|l| l.chars().filter(|c| c.is_ascii_digit()).collect::<String>())
+        };
+        assert!(narrow_total.is_some());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn the_technical_table_shows_raw_facts_at_every_width() {
+        let mut app = app_with_hidden_owner();
+        app.technical = true;
+        for width in [80u16, 100, 140] {
+            let screen = draw(&mut app, width, 26);
+            for expected in ["BIND", "STATE", "PID", "INODE", "technical view", "3000/tcp", "Listen"] {
+                assert!(screen.contains(expected), "missing {expected:?} at {width} cols:\n{screen}");
+            }
+            assert!(!screen.contains("SERVICE"), "simple columns are replaced:\n{screen}");
+        }
+        app.tab = Tab::Connections;
+        app.selected = None;
+        for width in [80u16, 100, 140] {
+            let screen = draw(&mut app, width, 26);
+            for expected in ["INODE", "Established", "10.20.30.40:55555"] {
+                assert!(screen.contains(expected), "missing {expected:?} at {width} cols:\n{screen}");
+            }
+        }
+        // And the footer shows the toggle.
+        app.tab = Tab::Listening;
+        assert!(draw(&mut app, 140, 26).contains("Tech"));
+    }
+
     #[test]
     fn every_theme_renders() {
         for theme in [ThemeName::Default, ThemeName::Light, ThemeName::Mono] {
@@ -1494,6 +2324,15 @@ mod tests {
         let mut live = App::new(nix::unistd::geteuid().is_root(), "me".into());
         live.rescan();
         println!("--- this machine, 120x38\n{}", draw(&mut live, 120, 38));
+        live.technical = true;
+        println!("--- this machine, technical view\n{}", draw(&mut live, 120, 20));
+
+        // The Inspector on this very program.
+        let mut me = app_inspecting_ourselves();
+        for digit in ['1', '2', '3', '4'] {
+            go_to(&mut me, digit);
+            println!("--- inspector tab {digit}\n{}", draw(&mut me, 100, 26));
+        }
     }
 
     #[test]

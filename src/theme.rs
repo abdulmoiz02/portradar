@@ -117,6 +117,7 @@ pub struct Glyphs {
     pub cursor: &'static str,
     pub normal: &'static str,
     pub dev: &'static str,
+    pub mask: &'static str,
     pub quote_open: &'static str,
     pub quote_close: &'static str,
 }
@@ -139,6 +140,7 @@ impl Glyphs {
         cursor: "█",
         normal: "✓",
         dev: "★",
+        mask: "•",
         quote_open: "“",
         quote_close: "”",
     };
@@ -160,6 +162,7 @@ impl Glyphs {
         cursor: "_",
         normal: "+",
         dev: "*",
+        mask: "*",
         quote_open: "\"",
         quote_close: "\"",
     };
@@ -224,7 +227,7 @@ mod tests {
         let g = Glyphs::ASCII;
         for s in [
             g.logo, g.live, g.paused, g.warn, g.row_bar, g.local, g.whole, g.one, g.up, g.down,
-            g.keys_move, g.keys_tabs, g.dot, g.cursor, g.normal, g.dev, g.quote_open,
+            g.keys_move, g.keys_tabs, g.dot, g.cursor, g.normal, g.dev, g.mask, g.quote_open,
             g.quote_close,
         ] {
             assert!(s.is_ascii(), "{s:?} is not ASCII");

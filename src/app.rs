@@ -1,7 +1,11 @@
 //! Dashboard state and keyboard handling (no drawing happens here).
 
+use std::collections::{HashMap, HashSet};
 use std::io;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -9,8 +13,10 @@ use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 
 use crate::browser;
+use crate::clip::{self, CopyResult};
 use crate::config;
 use crate::inspect::{self, Details};
+use crate::inspector::{self, Snapshot};
 use crate::kill;
 use crate::model::{self, Group, GroupKey, SortKey, Tracker};
 use crate::palette::{self, Command};
@@ -68,6 +74,60 @@ pub struct PaletteState {
     pub selected: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorTab {
+    Overview,
+    Process,
+    Sockets,
+    Origin,
+    Env,
+    Raw,
+}
+
+impl InspectorTab {
+    pub const ALL: [InspectorTab; 6] = [
+        InspectorTab::Overview,
+        InspectorTab::Process,
+        InspectorTab::Sockets,
+        InspectorTab::Origin,
+        InspectorTab::Env,
+        InspectorTab::Raw,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InspectorTab::Overview => "Overview",
+            InspectorTab::Process => "Process",
+            InspectorTab::Sockets => "Sockets",
+            InspectorTab::Origin => "Origin",
+            InspectorTab::Env => "Env",
+            InspectorTab::Raw => "Raw",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        InspectorTab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    fn step(self, delta: isize) -> InspectorTab {
+        let n = InspectorTab::ALL.len() as isize;
+        InspectorTab::ALL[(self.index() as isize + delta).rem_euclid(n) as usize]
+    }
+}
+
+/// The full-screen technical view of one program.
+#[derive(Debug, Clone)]
+pub struct InspectorState {
+    /// The table row it was opened from.
+    pub key: GroupKey,
+    pub tab: InspectorTab,
+    pub scroll: usize,
+    /// Show environment variable values instead of masking them. Always off
+    /// when the Inspector opens.
+    pub reveal_env: bool,
+    pub snapshot: Snapshot,
+}
+
 #[derive(Debug, Clone)]
 pub enum Mode {
     Normal,
@@ -78,6 +138,8 @@ pub enum Mode {
     Palette(PaletteState),
     /// The first-run tour, at this page (0-based).
     Tour(usize),
+    /// Everything about one program (Enter on a row).
+    Inspector(Box<InspectorState>),
 }
 
 /// Where things were drawn last frame, so mouse clicks can find them.
@@ -152,6 +214,23 @@ pub struct App {
     pub scan_error: Option<String>,
     pub look: Look,
     pub pending_free: Option<PendingFree>,
+    /// Show raw facts (bind addresses, kernel state, inode) in the table.
+    pub technical: bool,
+    /// Reverse DNS results: `Some(name)`, or `None` if the lookup failed.
+    /// Failures are remembered too, so we do not ask again.
+    pub hosts: HashMap<IpAddr, Option<String>>,
+    resolving: HashSet<IpAddr>,
+    dns_tx: Sender<(IpAddr, Option<String>)>,
+    dns_rx: Receiver<(IpAddr, Option<String>)>,
+    resolver: Arc<dyn Fn(IpAddr) -> Option<String> + Send + Sync>,
+    copy_tx: Sender<CopyResult>,
+    copy_rx: Receiver<CopyResult>,
+    copier: Arc<dyn Fn(String, Sender<CopyResult>) + Send + Sync>,
+    /// JSON waiting for a clipboard program's answer, in case we need to
+    /// fall back to the terminal's clipboard escape code.
+    last_json: Option<String>,
+    /// An escape sequence for the main loop to write to the terminal.
+    pending_osc52: Option<String>,
     /// Filled in by the UI every frame.
     pub hit: HitMap,
     /// Where the "tour seen" marker goes. `None` (for example as root)
@@ -162,6 +241,8 @@ pub struct App {
 
 impl App {
     pub fn new(is_root: bool, me: String) -> Self {
+        let (dns_tx, dns_rx) = channel();
+        let (copy_tx, copy_rx) = channel();
         App {
             tracker: Tracker::default(),
             tab: Tab::Listening,
@@ -186,6 +267,17 @@ impl App {
             scan_error: None,
             look: Look::default(),
             pending_free: None,
+            technical: false,
+            hosts: HashMap::new(),
+            resolving: HashSet::new(),
+            dns_tx,
+            dns_rx,
+            resolver: Arc::new(|ip| dns_lookup::lookup_addr(&ip).ok()),
+            copy_tx,
+            copy_rx,
+            copier: Arc::new(clip::copy_in_background),
+            last_json: None,
+            pending_osc52: None,
             hit: HitMap::default(),
             tour_dir: None,
             open_url: Box::new(|url| browser::open(url)),
@@ -237,6 +329,57 @@ impl App {
         );
     }
 
+    #[cfg(test)]
+    pub fn with_resolver(mut self, f: impl Fn(IpAddr) -> Option<String> + Send + Sync + 'static) -> Self {
+        self.resolver = Arc::new(f);
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_copier(mut self, f: impl Fn(String, Sender<CopyResult>) + Send + Sync + 'static) -> Self {
+        self.copier = Arc::new(f);
+        self
+    }
+
+    // ---- background work --------------------------------------------
+
+    /// Collect answers from background work (host-name lookups, clipboard
+    /// programs). The main loop calls this every pass.
+    pub fn tick(&mut self) {
+        let mut looked_up = false;
+        while let Ok((ip, name)) = self.dns_rx.try_recv() {
+            self.hosts.insert(ip, name);
+            self.resolving.remove(&ip);
+            looked_up = true;
+        }
+        if looked_up && self.resolving.is_empty() {
+            self.set_status("Host names looked up. Addresses that have none stay as numbers", false);
+        }
+
+        while let Ok(result) = self.copy_rx.try_recv() {
+            match result {
+                CopyResult::Tool(program) => {
+                    self.last_json = None;
+                    self.set_status(format!("Copied the JSON to the clipboard (using {program})"), false);
+                }
+                CopyResult::NoTool => {
+                    if let Some(json) = self.last_json.take() {
+                        self.pending_osc52 = Some(clip::osc52(&json));
+                    }
+                    self.set_status(
+                        "No clipboard program found (sudo apt install wl-clipboard). I asked your terminal to copy it, but many terminals ignore that, so check before relying on it. The JSON is on the Raw tab",
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A terminal escape sequence the main loop should write out, once.
+    pub fn take_osc52(&mut self) -> Option<String> {
+        self.pending_osc52.take()
+    }
+
     // ---- data -------------------------------------------------------
 
     pub fn rescan(&mut self) {
@@ -249,6 +392,7 @@ impl App {
             Err(err) => self.scan_error = Some(err.to_string()),
         }
         self.check_pending_free();
+        self.refresh_inspector();
         self.sync_selection();
         self.refresh_details();
     }
@@ -415,7 +559,202 @@ impl App {
             },
             Mode::Palette(state) => self.handle_palette(key, state),
             Mode::Tour(step) => self.handle_tour(key, step),
+            Mode::Inspector(state) => self.handle_inspector(key, state),
         }
+    }
+
+    // ---- inspector ----------------------------------------------------
+
+    pub fn find_group(&self, key: &GroupKey) -> Option<Group<'_>> {
+        model::group_rows(self.tracker.rows.iter())
+            .into_iter()
+            .find(|g| &g.key() == key)
+    }
+
+    /// Open sockets (listening first) that belong to one program.
+    fn entries_of_pid(&self, pid: u32) -> Vec<&scanner::PortEntry> {
+        let mut entries: Vec<&scanner::PortEntry> = self
+            .tracker
+            .rows
+            .iter()
+            .filter(|r| r.closed_at.is_none())
+            .filter(|r| r.entry.process.as_ref().is_some_and(|p| p.pid == pid))
+            .map(|r| &r.entry)
+            .collect();
+        entries.sort_by_key(|e| (!e.listening, e.protocol, e.local.port()));
+        entries
+    }
+
+    fn open_inspector(&mut self) {
+        if self.tab == Tab::Events {
+            return;
+        }
+        let Some(group) = self.selected_group() else {
+            self.set_status("Nothing selected", true);
+            return;
+        };
+        let key = group.key();
+        let snapshot = match group.process() {
+            Some(p) => inspector::collect(p.pid, &p.name, &self.entries_of_pid(p.pid)),
+            None => {
+                let entries: Vec<&scanner::PortEntry> = group.members.iter().map(|r| &r.entry).collect();
+                inspector::hidden_snapshot(&entries)
+            }
+        };
+        self.mode = Mode::Inspector(Box::new(InspectorState {
+            key,
+            tab: InspectorTab::Overview,
+            scroll: 0,
+            reveal_env: false,
+            snapshot,
+        }));
+    }
+
+    /// Re-read the inspected program after every scan. If it has exited,
+    /// keep showing what it looked like and say so.
+    fn refresh_inspector(&mut self) {
+        let Mode::Inspector(state) = &self.mode else {
+            return;
+        };
+        let old = state.snapshot.clone();
+        let key = state.key.clone();
+
+        let fresh = if old.pid != 0 {
+            inspector::collect(old.pid, &old.name, &self.entries_of_pid(old.pid))
+        } else {
+            match self.find_group(&key) {
+                Some(group) => {
+                    let entries: Vec<&scanner::PortEntry> = group.members.iter().map(|r| &r.entry).collect();
+                    inspector::hidden_snapshot(&entries)
+                }
+                None => old.clone(),
+            }
+        };
+        let snapshot = if fresh.exited && old.process.is_some() {
+            let mut kept = old;
+            kept.exited = true;
+            kept.sockets = fresh.sockets;
+            kept
+        } else {
+            fresh
+        };
+        if let Mode::Inspector(state) = &mut self.mode {
+            state.snapshot = snapshot;
+        }
+    }
+
+    fn handle_inspector(&mut self, key: KeyEvent, mut state: Box<InspectorState>) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => return,
+            KeyCode::Left | KeyCode::BackTab => self.inspector_tab(&mut state, -1),
+            KeyCode::Right | KeyCode::Tab => self.inspector_tab(&mut state, 1),
+            KeyCode::Char(c @ '1'..='6') => {
+                state.tab = InspectorTab::ALL[c as usize - '1' as usize];
+                state.scroll = 0;
+                state.reveal_env = false;
+            }
+            KeyCode::Up => state.scroll = state.scroll.saturating_sub(1),
+            KeyCode::Down => state.scroll += 1,
+            KeyCode::PageUp => state.scroll = state.scroll.saturating_sub(PAGE as usize),
+            KeyCode::PageDown => state.scroll += PAGE as usize,
+            KeyCode::Home => state.scroll = 0,
+            KeyCode::End => state.scroll = usize::MAX / 2, // the screen clamps it
+            KeyCode::Char('y') => self.request_copy(&state.snapshot),
+            KeyCode::Char('r') => self.request_resolve(&state.snapshot),
+            KeyCode::Char('v') => {
+                state.reveal_env = !state.reveal_env;
+                let text = if state.reveal_env {
+                    "Environment values are visible now. They may contain passwords or keys (v hides them)"
+                } else {
+                    "Environment values are hidden"
+                };
+                self.set_status(text, false);
+            }
+            // Actions close the Inspector first, then use the normal
+            // confirmation popups and safety checks.
+            KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('f') | KeyCode::Char('o')
+                if state.snapshot.exited =>
+            {
+                self.set_status("This program has exited, so there is nothing to stop or open", true);
+            }
+            KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::Char('f') | KeyCode::Char('o') => {
+                self.selected = Some(state.key.clone());
+                match key.code {
+                    KeyCode::Char('k') => self.request_stop(false, false),
+                    KeyCode::Char('K') => self.request_stop(true, false),
+                    KeyCode::Char('f') => self.request_stop(false, true),
+                    _ => self.request_open(),
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Inspector(state);
+    }
+
+    fn inspector_tab(&mut self, state: &mut InspectorState, delta: isize) {
+        state.tab = state.tab.step(delta);
+        state.scroll = 0;
+        // Values never stay revealed after moving away.
+        state.reveal_env = false;
+    }
+
+    fn request_copy(&mut self, snapshot: &Snapshot) {
+        let json = inspector::to_json(snapshot);
+        self.last_json = Some(json.clone());
+        (self.copier)(json, self.copy_tx.clone());
+        self.set_status("Copying the JSON (no environment variables included)...", false);
+    }
+
+    /// Reverse DNS for the remote addresses of the inspected program. Only
+    /// on request, because it sends those addresses to your DNS resolver.
+    fn request_resolve(&mut self, snapshot: &Snapshot) {
+        const MAX_LOOKUPS: usize = 50;
+        let mut wanted: Vec<IpAddr> = Vec::new();
+        for socket in snapshot.sockets.iter().filter(|s| !s.listening) {
+            let Ok(addr) = socket.remote.parse::<std::net::SocketAddr>() else {
+                continue;
+            };
+            let ip = addr.ip();
+            if ip.is_loopback()
+                || ip.is_unspecified()
+                || self.hosts.contains_key(&ip)
+                || self.resolving.contains(&ip)
+                || wanted.contains(&ip)
+            {
+                continue;
+            }
+            wanted.push(ip);
+        }
+        wanted.truncate(MAX_LOOKUPS);
+        if wanted.is_empty() {
+            self.set_status("Nothing new to look up (loopback addresses and known names are skipped)", false);
+            return;
+        }
+
+        self.resolving.extend(wanted.iter().copied());
+        let count = wanted.len();
+        let resolver = Arc::clone(&self.resolver);
+        let tx = self.dns_tx.clone();
+        std::thread::spawn(move || {
+            for ip in wanted {
+                let _ = tx.send((ip, resolver(ip)));
+            }
+        });
+        self.set_status(
+            format!("Looking up {count} address(es). This sends them to your DNS resolver; names appear in the Sockets tab"),
+            false,
+        );
+    }
+
+    fn toggle_technical(&mut self) {
+        self.technical = !self.technical;
+        let text = if self.technical {
+            "Technical view: raw bind addresses, kernel state and inode (t again to go back)"
+        } else {
+            "Simple view"
+        };
+        self.set_status(text, false);
     }
 
     // ---- command menu and tour -------------------------------------
@@ -456,6 +795,8 @@ impl App {
             Command::ForceStop => self.request_stop(true, false),
             Command::Free => self.request_stop(false, true),
             Command::Open => self.request_open(),
+            Command::Inspect => self.open_inspector(),
+            Command::ToggleTechnical => self.toggle_technical(),
             Command::SortBy(key) => {
                 self.sort = key;
                 self.after_view_change();
@@ -497,6 +838,14 @@ impl App {
     // ---- mouse -------------------------------------------------------
 
     pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if let Mode::Inspector(state) = &mut self.mode {
+            match event.kind {
+                MouseEventKind::ScrollUp => state.scroll = state.scroll.saturating_sub(WHEEL_ROWS as usize),
+                MouseEventKind::ScrollDown => state.scroll += WHEEL_ROWS as usize,
+                _ => {}
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
@@ -545,6 +894,8 @@ impl App {
             KeyCode::Char('2') => self.set_tab(Tab::Connections),
             KeyCode::Char('3') => self.set_tab(Tab::Events),
             KeyCode::Char('/') => self.mode = Mode::Filter,
+            KeyCode::Enter => self.open_inspector(),
+            KeyCode::Char('t') => self.toggle_technical(),
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
                 self.after_view_change();
@@ -1278,6 +1629,338 @@ mod tests {
         assert_eq!(selected_port(&app), 1, "mouse is ignored while a popup is open");
         click(&mut app, 1, 1);
         assert!(matches!(app.mode, Mode::Help));
+    }
+
+    fn own_pid() -> u32 {
+        std::process::id()
+    }
+
+    fn open_inspector_on_first_row(app: &mut App) {
+        press(app, KeyCode::Enter);
+    }
+
+    fn inspector(app: &App) -> &InspectorState {
+        match &app.mode {
+            Mode::Inspector(state) => state,
+            other => panic!("not in the Inspector: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_opens_the_inspector_and_esc_or_q_close_it_without_quitting() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        let state = inspector(&app);
+        assert_eq!(state.tab, InspectorTab::Overview);
+        assert!(!state.reveal_env, "values start hidden");
+        assert_eq!(state.snapshot.pid, own_pid());
+        assert!(state.snapshot.process.is_some());
+
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!app.should_quit, "q closes the Inspector, it does not quit");
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn enter_does_nothing_on_the_events_tab_or_an_empty_table() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+
+        let mut empty = app_with(vec![]);
+        press(&mut empty, KeyCode::Enter);
+        assert!(matches!(empty.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn the_inspector_opens_on_hidden_owners_and_on_connections() {
+        let mut app = app_with(vec![listener(631, 1, None)]);
+        open_inspector_on_first_row(&mut app);
+        let state = inspector(&app);
+        assert!(state.snapshot.process.is_none());
+        assert!(state.snapshot.env.is_none());
+        assert_eq!(state.snapshot.sockets.len(), 1);
+        // Every tab can be visited without trouble.
+        for digit in ['2', '3', '4', '5', '6'] {
+            press(&mut app, KeyCode::Char(digit));
+        }
+        press(&mut app, KeyCode::Esc);
+
+        let mut conn = listener(443, 2, Some(("portwatch", own_pid())));
+        conn.listening = false;
+        conn.state = "Established".into();
+        conn.remote = "10.20.30.40:55555".parse().unwrap();
+        let mut app = app_with(vec![conn]);
+        press(&mut app, KeyCode::Char('2'));
+        open_inspector_on_first_row(&mut app);
+        assert_eq!(inspector(&app).snapshot.pid, own_pid());
+    }
+
+    #[test]
+    fn inspector_tabs_wrap_and_values_never_stay_revealed() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(inspector(&app).tab, InspectorTab::Raw);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(inspector(&app).tab, InspectorTab::Overview);
+
+        press(&mut app, KeyCode::Char('5')); // Env
+        press(&mut app, KeyCode::Char('v'));
+        assert!(inspector(&app).reveal_env);
+        press(&mut app, KeyCode::Right);
+        assert!(!inspector(&app).reveal_env, "moving away hides the values again");
+
+        press(&mut app, KeyCode::Char('5'));
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char('1'));
+        assert!(!inspector(&app).reveal_env);
+
+        // Closing and reopening starts hidden.
+        press(&mut app, KeyCode::Char('5'));
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Esc);
+        open_inspector_on_first_row(&mut app);
+        assert!(!inspector(&app).reveal_env);
+    }
+
+    #[test]
+    fn scrolling_keys_move_and_home_goes_back_to_the_top() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(inspector(&app).scroll, 12);
+        press(&mut app, KeyCode::PageUp);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(inspector(&app).scroll, 1);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(inspector(&app).scroll, 0);
+        // Changing tab starts at the top.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(inspector(&app).scroll, 0);
+    }
+
+    #[test]
+    fn inspector_actions_close_it_and_use_the_normal_safety_popups() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('f'));
+        // portwatch is not allowed to stop itself, so the same refusal applies.
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.as_ref().unwrap().text.contains("Refusing"));
+
+        // A real program (a PID that does not exist would be shown as exited).
+        let mut child = crate::kill::spawn_sleeper();
+        let pid = child.id();
+        let mut app = app_with(vec![listener(3000, 1, Some(("sleep", pid)))]);
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('K'));
+        assert!(matches!(&app.mode, Mode::ConfirmKill(r) if r.force && r.pid == pid));
+        press(&mut app, KeyCode::Char('n'));
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('f'));
+        assert!(matches!(&app.mode, Mode::ConfirmKill(r) if r.free));
+        // Cancelled: it must still be running.
+        press(&mut app, KeyCode::Char('n'));
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn inspector_open_uses_the_browser_helper() {
+        let opened = Rc::new(RefCell::new(Vec::<String>::new()));
+        let sink = Rc::clone(&opened);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+            .with_opener(move |url| {
+                sink.borrow_mut().push(url.to_string());
+                Ok(())
+            });
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(*opened.borrow(), vec!["http://127.0.0.1:3000".to_string()]);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_program_that_exits_while_inspected_keeps_its_last_data_and_disables_actions() {
+        let mut child = crate::kill::spawn_sleeper();
+        let mut app = app_with(vec![listener(3000, 1, Some(("sleep", child.id())))]);
+        open_inspector_on_first_row(&mut app);
+        assert!(!inspector(&app).snapshot.exited);
+        assert!(inspector(&app).snapshot.process.is_some());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        app.refresh_inspector();
+        let state = inspector(&app);
+        assert!(state.snapshot.exited);
+        assert!(state.snapshot.process.is_some(), "the last known facts stay on screen");
+        assert_eq!(state.snapshot.name, "sleep");
+
+        for key in ['k', 'K', 'f', 'o'] {
+            press(&mut app, KeyCode::Char(key));
+            assert!(matches!(app.mode, Mode::Inspector(_)), "{key} must not leave the Inspector");
+            assert!(app.status.as_ref().unwrap().is_error);
+        }
+    }
+
+    #[test]
+    fn copy_json_reports_what_actually_happened() {
+        use crate::clip::CopyResult;
+        use std::sync::Mutex;
+
+        // A clipboard program accepts it.
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+            .with_copier(move |json, tx| {
+                sink.lock().unwrap().push(json);
+                tx.send(CopyResult::Tool("fake-clip".into())).unwrap();
+            });
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.status.as_ref().unwrap().text.starts_with("Copying"));
+        app.tick();
+        let status = app.status.as_ref().unwrap();
+        assert!(status.text.contains("Copied") && status.text.contains("fake-clip"), "{}", status.text);
+        assert!(app.take_osc52().is_none(), "no escape code when a program worked");
+        let copied = seen.lock().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&copied[0]).unwrap();
+        assert_eq!(value["process"]["pid"], own_pid());
+        assert!(value.get("env").is_none());
+
+        // No clipboard program: fall back to the escape code and never claim success.
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+            .with_copier(|_, tx| tx.send(CopyResult::NoTool).unwrap());
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('y'));
+        app.tick();
+        let status = app.status.as_ref().unwrap();
+        assert!(!status.text.contains("Copied"), "{}", status.text);
+        assert!(status.text.contains("wl-clipboard"), "{}", status.text);
+        let osc = app.take_osc52().expect("escape code to send");
+        assert!(osc.starts_with("\x1b]52;c;") && osc.ends_with('\x07'));
+        assert!(app.take_osc52().is_none(), "sent only once");
+    }
+
+    fn wait_for_hosts(app: &mut App, count: usize) {
+        for _ in 0..200 {
+            app.tick();
+            if app.hosts.len() >= count {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("lookups did not finish: {} of {count}", app.hosts.len());
+    }
+
+    fn app_with_connections(remotes: &[&str]) -> App {
+        let entries = remotes
+            .iter()
+            .enumerate()
+            .map(|(i, remote)| {
+                let mut e = listener(40000 + i as u16, 100 + i as u64, Some(("portwatch", own_pid())));
+                e.listening = false;
+                e.state = "Established".into();
+                e.remote = remote.parse().unwrap();
+                e
+            })
+            .collect();
+        let mut app = app_with(entries);
+        press(&mut app, KeyCode::Char('2'));
+        app
+    }
+
+    #[test]
+    fn host_names_are_only_looked_up_on_request_and_never_for_loopback() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<IpAddr>::new()));
+        let log = Arc::clone(&calls);
+        let mut app = app_with_connections(&["10.20.30.40:443", "127.0.0.1:5432", "10.20.30.40:80", "10.1.1.1:22"])
+            .with_resolver(move |ip| {
+                log.lock().unwrap().push(ip);
+                if ip.to_string() == "10.1.1.1" { None } else { Some(format!("host-{ip}.test")) }
+            });
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('3'));
+        assert!(calls.lock().unwrap().is_empty(), "opening the Sockets tab must not look anything up");
+        assert!(app.hosts.is_empty());
+
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app.status.as_ref().unwrap().text.contains("DNS resolver"));
+        wait_for_hosts(&mut app, 2);
+        let asked = calls.lock().unwrap().clone();
+        assert_eq!(asked.len(), 2, "duplicates and loopback are skipped: {asked:?}");
+        assert!(!asked.iter().any(|ip| ip.is_loopback()));
+        assert_eq!(app.hosts[&"10.20.30.40".parse::<IpAddr>().unwrap()].as_deref(), Some("host-10.20.30.40.test"));
+        // A failed lookup is remembered as a failure.
+        assert_eq!(app.hosts[&"10.1.1.1".parse::<IpAddr>().unwrap()], None);
+
+        // Pressing r again asks for nothing new, including the failed one.
+        press(&mut app, KeyCode::Char('r'));
+        std::thread::sleep(Duration::from_millis(100));
+        app.tick();
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert!(app.status.as_ref().unwrap().text.contains("Nothing new"));
+    }
+
+    #[test]
+    fn host_lookups_are_capped() {
+        let remotes: Vec<String> = (0..60).map(|i| format!("10.9.{}.{}:443", i / 250, i % 250 + 1)).collect();
+        let refs: Vec<&str> = remotes.iter().map(String::as_str).collect();
+        let calls = Arc::new(std::sync::Mutex::new(0usize));
+        let counter = Arc::clone(&calls);
+        let mut app = app_with_connections(&refs).with_resolver(move |_| {
+            *counter.lock().unwrap() += 1;
+            None
+        });
+        open_inspector_on_first_row(&mut app);
+        press(&mut app, KeyCode::Char('r'));
+        wait_for_hosts(&mut app, 50);
+        std::thread::sleep(Duration::from_millis(100));
+        app.tick();
+        assert_eq!(*calls.lock().unwrap(), 50);
+    }
+
+    #[test]
+    fn technical_view_and_menu_entries_for_the_inspector() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        assert!(!app.technical);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.technical);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(!app.technical);
+
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "simple and technical");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.technical);
+
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "inspect the selected");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Inspector(_)));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_inspector() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        open_inspector_on_first_row(&mut app);
+        let wheel = |kind| MouseEvent { kind, column: 5, row: 5, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(inspector(&app).scroll, 3);
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(inspector(&app).scroll, 0);
     }
 
     #[test]

@@ -62,6 +62,7 @@ cargo install --path . --force
 | `portwatch list` | Prints listening ports as a table and exits (works in scripts and pipes) |
 | `portwatch list --all` | Also includes every connection, with its state (one line per socket, for scripts) |
 | `portwatch free <port>` | Finds what is using the port, asks, stops it, and checks that the port is really free (`--yes` skips the question, `--force` sends SIGKILL) |
+| `portwatch inspect <port>` | Everything about the program using a port: process details, every socket it has, and where it comes from (systemd or Docker). Add `--json` for JSON you can pipe anywhere |
 | `portwatch config` | Shows where the optional settings file goes and what it can contain |
 | `portwatch --help` / `--version` | Help and version |
 
@@ -79,6 +80,8 @@ The first time you start it, a three-page tour explains what a port is and how t
 | `Esc` | Clear the search |
 | `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
 | `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
+| `Enter` | Open the **Inspector**: full technical detail on the selected program (see below) |
+| `t` | Switch the table between the simple view and the technical view |
 | `k` / `K` | Stop the selected program (SIGTERM) / force stop (SIGKILL). Asks to confirm first |
 | `f` | Free the port: stop its program, then check that the port really became free |
 | `o` | Open the port in your web browser (TCP only) |
@@ -106,6 +109,28 @@ The mouse works too: click a tab or a row, scroll with the wheel. (While the mou
 - **Green** rows opened in the last few seconds. **Red, struck-through** rows just closed.
 - The **Details** panel explains the selected port in plain sentences, then shows how long it has been running, its open connections, the full command and its folder.
 - The **Events** tab logs every listening port that opens or closes while portwatch is running.
+
+### The Inspector (technical detail on request)
+
+Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` goes back. Switch tabs with `←` `→` or `1`-`6`, scroll with `↑` `↓` `PgUp` `PgDn` `Home` `End` or the wheel.
+
+| Tab | Shows |
+|---|---|
+| **1 Overview** | A plain-English summary, the mark and its reason, and where to look next |
+| **2 Process** | PID, parent and the chain of parents up to init, state, user/uid/gid, threads, memory, CPU time, start time, open files, folder, program file, and the command line one argument per line |
+| **3 Sockets** | Every socket the program has: state, local and remote address, receive and send queue sizes, inode. Press `r` to look up host names for the remote addresses (see below) |
+| **4 Origin** | The systemd service or Docker container it belongs to, and the raw cgroup paths |
+| **5 Env** | Its environment variables. **Values are hidden** until you press `v`, and hidden again as soon as you change tab or close the Inspector |
+| **6 Raw** | The JSON that `y` copies, then the exact `/proc` text everything above was built from, so you can check the work |
+
+- `y` copies the JSON. It tries `wl-copy`, `xclip` and `xsel` if installed. If none is, it asks your terminal to copy (many terminals ignore that) and says so; it never claims a copy worked unless a program accepted it. Installing `wl-clipboard` (`sudo apt install wl-clipboard`) is the dependable fix on Wayland. `portwatch inspect <port> --json | wl-copy` works too.
+- **Secrets:** environment variables are never part of the JSON, the Raw tab or the plain-text report. The JSON does include the program's **command line**, and command lines sometimes contain passwords, so look before you share it.
+- **Host names:** `r` sends the remote addresses to your DNS resolver (reverse lookup). It only happens when you ask, loopback addresses are skipped, at most 50 are looked up, and results (including failures) are remembered.
+- `k`, `f` and `o` work from the Inspector too: they close it first and then use the normal confirmation popup and safety checks.
+- The Inspector refreshes with every scan. If the program exits while you are looking, its last known details stay on screen with a notice, and the actions are switched off.
+- Details of other users' programs are not readable without `sudo`; the Inspector says so instead of guessing.
+
+The **technical table** (`t`) swaps the friendly columns for the raw facts: the exact bind addresses, kernel socket state, PID and inode (a `+2` means two more sockets are merged into the row).
 
 ### Stopping processes safely
 
@@ -144,7 +169,7 @@ sudo "$(which portwatch)"
 
 1. **Scan** (`src/scanner.rs`): every second, read the kernel's socket tables `/proc/net/tcp`, `tcp6`, `udp`, `udp6`. Each socket has an inode number. Then walk `/proc/<pid>/fd/*` for every process you may inspect, find the socket file descriptors, and match their inodes to get the owning PID and name. No `ss`, `lsof` or root is required.
 2. **Track** (`src/model.rs`): compare each scan with the previous one. New sockets are marked "new", missing ones are kept for 5 seconds as "closed", and listening-port changes are written to the event log. The selected row is remembered by socket identity, so the cursor does not jump when rows come and go.
-3. **Inspect** (`src/inspect.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd.
+3. **Inspect** (`src/inspect.rs`, `src/inspector.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd. The Inspector collects everything in `src/inspector.rs` (process facts, sockets with queue sizes, origin, environment kept apart, raw `/proc` text) and `src/clip.rs` handles copying.
 4. **Draw** (`src/ui.rs`, `src/app.rs`): a loop checks the keyboard every 100 ms (so keys feel instant), rescans every second, and redraws with [ratatui](https://ratatui.rs).
 5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
 6. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
