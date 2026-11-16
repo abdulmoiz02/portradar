@@ -60,10 +60,16 @@ cargo install --path . --force
 |---|---|
 | `portwatch` | Opens the dashboard |
 | `portwatch list` | Prints listening ports as a table and exits (works in scripts and pipes) |
-| `portwatch list --all` | Also includes every connection, with its state |
+| `portwatch list --all` | Also includes every connection, with its state (one line per socket, for scripts) |
+| `portwatch free <port>` | Finds what is using the port, asks, stops it, and checks that the port is really free (`--yes` skips the question, `--force` sends SIGKILL) |
+| `portwatch config` | Shows where the optional settings file goes and what it can contain |
 | `portwatch --help` / `--version` | Help and version |
 
+`portwatch free 3000` fixes the classic "address already in use" error. Unlike `fuser -k`, it asks first, tries SIGTERM before anything harsher, refuses to touch PID 1 or itself, and tells you whether the port was actually freed (exit code 0) or who still holds it (exit code 1).
+
 ## Using the dashboard
+
+The first time you start it, a three-page tour explains what a port is and how to read a row. Press `?` for help at any time, or `:` for a command menu where you can find any action by typing its name.
 
 | Key | Action |
 |---|---|
@@ -71,14 +77,26 @@ cargo install --path . --force
 | `←` `→` / `Tab` / `1` `2` `3` | Switch tab: Listening, Connections, Events |
 | `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
 | `Esc` | Clear the search |
+| `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
 | `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
-| `k` | Stop the selected process (SIGTERM). Asks to confirm first |
-| `K` | Force stop (SIGKILL). Asks to confirm first |
+| `k` / `K` | Stop the selected program (SIGTERM) / force stop (SIGKILL). Asks to confirm first |
+| `f` | Free the port: stop its program, then check that the port really became free |
+| `o` | Open the port in your web browser (TCP only) |
+| `:` or `Ctrl+P` | Command menu |
 | `p` | Pause or resume refreshing |
 | `?` | Help |
 | `q` / `Ctrl+C` | Quit |
 
+The mouse works too: click a tab or a row, scroll with the wheel. (While the mouse is captured, hold `Shift` to select text with the terminal. Turn it off with `mouse = false` in the settings file.)
+
 - **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see.
+- **One row per program per port.** If a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Different programs are never merged. `portwatch list` still shows every socket.
+- **The mark in the first column** is a quick opinion, with the reason in the Details panel:
+  - `✓` looks normal (dim)
+  - `★` a development server you started
+  - `⚠` worth a look, for example a database open to the network, or an open port whose program you cannot see
+
+  These are simple rules, not a security audit. They will sometimes be wrong, which is why the reason is shown.
 - **SERVICE** is what that port number is normally used for (3306 is usually MySQL, 6379 Redis, and so on). It is a guess from the number only: any program can listen on any port.
 - **ACCESS** tells you who can connect:
   - `● this PC only` (green): the port is bound to loopback, so only programs on this computer can reach it.
@@ -96,6 +114,21 @@ cargo install --path . --force
 - Just before sending the signal it checks that the PID still belongs to the same program (PIDs get reused), so it cannot hit the wrong process.
 - If the process is a **Docker container** or a **systemd service**, the popup and Details panel warn you that killing it may just restart it, and tell you the right command (`docker stop ...` or `sudo systemctl stop ...`).
 - Killing only works from the Listening tab.
+- `f` and `portwatch free` do not take "I sent the signal" for success: they scan again and say whether the port is free or who still holds it. Servers that run several worker processes may need `K`.
+- `o` never opens a browser when portwatch runs as root.
+
+### Settings (optional)
+
+portwatch works without any settings. To change them, create `~/.config/portwatch/config.toml` (run `portwatch config` to see the exact path and a template):
+
+```toml
+refresh_seconds = 1     # how often the table refreshes (1 to 30)
+theme = "default"       # "default" (dark terminal), "light" or "mono"
+ascii = false           # true = plain ASCII symbols and borders
+mouse = true            # click tabs and rows, scroll with the wheel
+```
+
+portwatch only ever reads this file. If it has a mistake, portwatch shows a message in the footer and uses the defaults. The only file portwatch writes is a tiny marker (`~/.local/state/portwatch/tour-seen`) so the tour is shown once, and never when run as root.
 
 ### Permissions
 
@@ -113,7 +146,8 @@ sudo "$(which portwatch)"
 2. **Track** (`src/model.rs`): compare each scan with the previous one. New sockets are marked "new", missing ones are kept for 5 seconds as "closed", and listening-port changes are written to the event log. The selected row is remembered by socket identity, so the cursor does not jump when rows come and go.
 3. **Inspect** (`src/inspect.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd.
 4. **Draw** (`src/ui.rs`, `src/app.rs`): a loop checks the keyboard every 100 ms (so keys feel instant), rescans every second, and redraws with [ratatui](https://ratatui.rs).
-5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above.
+5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
+6. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
 
 ## Development
 

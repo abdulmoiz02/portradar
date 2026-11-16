@@ -1,18 +1,27 @@
 //! Dashboard state and keyboard handling (no drawing happens here).
 
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 
 use crate::browser;
+use crate::config;
 use crate::inspect::{self, Details};
 use crate::kill;
 use crate::model::{self, Group, GroupKey, SortKey, Tracker};
+use crate::palette::{self, Command};
 use crate::scanner::{self, Protocol};
 use crate::theme::Look;
 use crate::verdict;
+
+/// Number of pages in the first-run tour.
+pub const TOUR_STEPS: usize = 3;
+/// Rows moved per mouse-wheel notch.
+const WHEEL_ROWS: isize = 3;
 
 const STATUS_SHOWN_FOR: Duration = Duration::from_secs(6);
 /// How long after "free this port" we wait before saying it is still in use.
@@ -52,12 +61,53 @@ pub struct KillRequest {
     pub advice: Option<String>,
 }
 
+/// What is typed in the command menu and which result is highlighted.
+#[derive(Debug, Clone, Default)]
+pub struct PaletteState {
+    pub input: String,
+    pub selected: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum Mode {
     Normal,
     Filter,
     ConfirmKill(KillRequest),
     Help,
+    /// The `:` command menu.
+    Palette(PaletteState),
+    /// The first-run tour, at this page (0-based).
+    Tour(usize),
+}
+
+/// Where things were drawn last frame, so mouse clicks can find them.
+#[derive(Debug, Clone, Default)]
+pub struct HitMap {
+    pub tabs: Vec<(Tab, Rect)>,
+    /// The area holding table data rows (below the header).
+    pub rows: Rect,
+    /// Index of the first visible data row (the table's scroll position).
+    pub row_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    Tab(Tab),
+    /// Index into the currently visible rows.
+    Row(usize),
+}
+
+impl HitMap {
+    pub fn hit_test(&self, x: u16, y: u16) -> Option<Hit> {
+        let inside = |r: &Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if let Some((tab, _)) = self.tabs.iter().find(|(_, r)| inside(r)) {
+            return Some(Hit::Tab(*tab));
+        }
+        if inside(&self.rows) {
+            return Some(Hit::Row((y - self.rows.y) as usize + self.row_offset));
+        }
+        None
+    }
 }
 
 pub struct Status {
@@ -102,6 +152,11 @@ pub struct App {
     pub scan_error: Option<String>,
     pub look: Look,
     pub pending_free: Option<PendingFree>,
+    /// Filled in by the UI every frame.
+    pub hit: HitMap,
+    /// Where the "tour seen" marker goes. `None` (for example as root)
+    /// means nothing is ever written.
+    tour_dir: Option<PathBuf>,
     open_url: Box<dyn FnMut(&str) -> io::Result<()>>,
 }
 
@@ -131,6 +186,8 @@ impl App {
             scan_error: None,
             look: Look::default(),
             pending_free: None,
+            hit: HitMap::default(),
+            tour_dir: None,
             open_url: Box::new(|url| browser::open(url)),
         }
     }
@@ -138,6 +195,31 @@ impl App {
     pub fn with_look(mut self, look: Look) -> Self {
         self.look = look;
         self
+    }
+
+    /// Remember the tour in `dir`. Pass `None` to never write anything.
+    pub fn with_tour_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.tour_dir = dir;
+        self
+    }
+
+    /// True if the first-run tour should be shown now.
+    pub fn tour_due(&self) -> bool {
+        self.tour_dir
+            .as_deref()
+            .is_some_and(|dir| !config::tour_seen_in(dir))
+    }
+
+    pub fn start_tour(&mut self) {
+        self.mode = Mode::Tour(0);
+    }
+
+    fn finish_tour(&mut self) {
+        self.mode = Mode::Normal;
+        if let Some(dir) = &self.tour_dir {
+            config::mark_tour_seen_in(dir);
+        }
+        self.set_status("That's it. Press ? any time for help, or : for the command menu", false);
     }
 
     #[cfg(test)]
@@ -327,6 +409,114 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('Y') => self.confirm_kill(request),
                 _ => self.set_status("Cancelled. Nothing was stopped.", false),
             },
+            Mode::Palette(state) => self.handle_palette(key, state),
+            Mode::Tour(step) => self.handle_tour(key, step),
+        }
+    }
+
+    // ---- command menu and tour -------------------------------------
+
+    fn handle_palette(&mut self, key: KeyEvent, mut state: PaletteState) {
+        let results = palette::matching(&state.input);
+        match key.code {
+            KeyCode::Esc => return,
+            KeyCode::Enter => {
+                if let Some(entry) = results.get(state.selected) {
+                    self.run_command(entry.command);
+                }
+                return;
+            }
+            KeyCode::Up => state.selected = state.selected.saturating_sub(1),
+            KeyCode::Down => {
+                state.selected = (state.selected + 1).min(results.len().saturating_sub(1));
+            }
+            KeyCode::Backspace => {
+                state.input.pop();
+                state.selected = 0;
+            }
+            // Typing is only ever text here: q, k, y and friends do nothing.
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.input.push(c);
+                state.selected = 0;
+            }
+            _ => {}
+        }
+        self.mode = Mode::Palette(state);
+    }
+
+    /// Run a command chosen in the menu. Anything destructive still goes
+    /// through the usual confirmation popup.
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::Stop => self.request_stop(false, false),
+            Command::ForceStop => self.request_stop(true, false),
+            Command::Free => self.request_stop(false, true),
+            Command::Open => self.request_open(),
+            Command::SortBy(key) => {
+                self.sort = key;
+                self.after_view_change();
+            }
+            Command::Reverse => {
+                self.reverse = !self.reverse;
+                self.after_view_change();
+            }
+            Command::ToggleExposed => self.toggle_exposed(),
+            Command::ToggleMine => self.toggle_mine(),
+            Command::ToggleQuiet => self.toggle_noise(),
+            Command::Pause => self.toggle_pause(),
+            Command::Goto(tab) => self.set_tab(tab),
+            Command::ClearSearch => {
+                self.filter.clear();
+                self.after_view_change();
+            }
+            Command::Help => self.mode = Mode::Help,
+            Command::Tour => self.start_tour(),
+            Command::Quit => self.should_quit = true,
+        }
+    }
+
+    fn handle_tour(&mut self, key: KeyEvent, step: usize) {
+        match key.code {
+            KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('n') => {
+                if step + 1 >= TOUR_STEPS {
+                    self.finish_tour();
+                } else {
+                    self.mode = Mode::Tour(step + 1);
+                }
+            }
+            KeyCode::Left | KeyCode::Char('b') => self.mode = Mode::Tour(step.saturating_sub(1)),
+            KeyCode::Esc | KeyCode::Char('q') => self.finish_tour(),
+            _ => self.mode = Mode::Tour(step),
+        }
+    }
+
+    // ---- mouse -------------------------------------------------------
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        match event.kind {
+            MouseEventKind::ScrollUp => self.move_selection(-WHEEL_ROWS),
+            MouseEventKind::ScrollDown => self.move_selection(WHEEL_ROWS),
+            MouseEventKind::Down(MouseButton::Left) => {
+                match self.hit.hit_test(event.column, event.row) {
+                    Some(Hit::Tab(tab)) => self.set_tab(tab),
+                    Some(Hit::Row(index)) => self.select_index(index),
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Select the row at `index` in the visible list (ignored if past the end).
+    fn select_index(&mut self, index: usize) {
+        let keys: Vec<GroupKey> = self.visible().iter().map(|g| g.key()).collect();
+        if let Some(key) = keys.get(index) {
+            self.selected = Some(key.clone());
+            self.selected_index = index;
+            self.refresh_details();
         }
     }
 
@@ -362,18 +552,11 @@ impl App {
             KeyCode::Char('e') => self.toggle_exposed(),
             KeyCode::Char('m') => self.toggle_mine(),
             KeyCode::Char('h') => self.toggle_noise(),
-            KeyCode::Char('p') => {
-                self.paused = !self.paused;
-                let text = if self.paused {
-                    "Paused: the table is frozen (press p to resume)"
-                } else {
-                    "Resumed"
-                };
-                self.set_status(text, false);
-                if !self.paused {
-                    self.rescan_now = true;
-                }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::Palette(PaletteState::default());
             }
+            KeyCode::Char('p') => self.toggle_pause(),
+            KeyCode::Char(':') => self.mode = Mode::Palette(PaletteState::default()),
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Char('k') => self.request_stop(false, false),
             KeyCode::Char('K') => self.request_stop(true, false),
@@ -413,6 +596,19 @@ impl App {
 
     fn switch_tab(&mut self, delta: isize) {
         self.set_tab(self.tab.step(delta));
+    }
+
+    fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        let text = if self.paused {
+            "Paused: the table is frozen (press p to resume)"
+        } else {
+            "Resumed"
+        };
+        self.set_status(text, false);
+        if !self.paused {
+            self.rescan_now = true;
+        }
     }
 
     // ---- quick filters ----------------------------------------------
@@ -894,6 +1090,190 @@ mod tests {
         let status = app.status.as_ref().unwrap();
         assert!(status.is_error);
         assert!(status.text.contains("xdg-open"));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn the_command_menu_only_types_text_and_never_triggers_keys() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("node", 4242)))]);
+        press(&mut app, KeyCode::Char(':'));
+        assert!(matches!(app.mode, Mode::Palette(_)));
+        type_text(&mut app, "qkKyfoemhp");
+        assert!(!app.should_quit);
+        assert!(!app.paused);
+        assert!(!app.only_exposed && !app.only_mine && !app.hide_noise);
+        match &app.mode {
+            Mode::Palette(state) => assert_eq!(state.input, "qkKyfoemhp"),
+            other => panic!("left the menu: {other:?}"),
+        }
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn the_command_menu_runs_the_chosen_command() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("node", 4242)))]);
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "sort uptime");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.sort, SortKey::Uptime);
+
+        // Ctrl+P opens it too; Down/Up move within the results.
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(matches!(app.mode, Mode::Palette(_)));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        match &app.mode {
+            Mode::Palette(state) => assert_eq!(state.selected, 1),
+            other => panic!("{other:?}"),
+        }
+        assert!(!app.paused, "Ctrl+P must not toggle pause");
+    }
+
+    #[test]
+    fn destructive_menu_commands_still_ask_first() {
+        let mut app = app_with(vec![listener(3000, 1, Some(("node", 4242)))]);
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "force stop");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.mode, Mode::ConfirmKill(r) if r.force));
+
+        // And "free" from the menu behaves like the f key.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "free");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.mode, Mode::ConfirmKill(r) if r.free));
+    }
+
+    #[test]
+    fn an_empty_result_list_does_nothing_on_enter() {
+        let mut app = app_with(vec![]);
+        press(&mut app, KeyCode::Char(':'));
+        type_text(&mut app, "zzzz");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!app.should_quit);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("portwatch-app-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_tour_pages_through_and_is_remembered() {
+        let dir = temp_dir("tour");
+        let mut app = App::new(false, "alice".into()).with_tour_dir(Some(dir.clone()));
+        assert!(app.tour_due());
+        app.start_tour();
+        press(&mut app, KeyCode::Right);
+        assert!(matches!(app.mode, Mode::Tour(1)));
+        press(&mut app, KeyCode::Left);
+        assert!(matches!(app.mode, Mode::Tour(0)));
+        press(&mut app, KeyCode::Char('x')); // ignored
+        assert!(matches!(app.mode, Mode::Tour(0)));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        assert!(matches!(app.mode, Mode::Tour(2)));
+        assert!(app.tour_due(), "not remembered until it is finished");
+        press(&mut app, KeyCode::Right);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!app.tour_due());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skipping_the_tour_also_remembers_it_and_root_never_writes() {
+        let dir = temp_dir("skip");
+        let mut app = App::new(false, "alice".into()).with_tour_dir(Some(dir.clone()));
+        app.start_tour();
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!app.tour_due());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // No directory (as root): never due, never writes, still closes.
+        let mut root = App::new(true, "root".into());
+        assert!(!root.tour_due());
+        root.start_tour();
+        press(&mut root, KeyCode::Esc);
+        assert!(matches!(root.mode, Mode::Normal));
+    }
+
+    fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        Rect::new(x, y, w, h)
+    }
+
+    #[test]
+    fn hit_testing_finds_tabs_and_rows_with_scrolling() {
+        let hit = HitMap {
+            tabs: vec![(Tab::Listening, rect(0, 5, 18, 1)), (Tab::Connections, rect(19, 5, 20, 1))],
+            rows: rect(1, 8, 100, 10),
+            row_offset: 4,
+        };
+        assert_eq!(hit.hit_test(3, 5), Some(Hit::Tab(Tab::Listening)));
+        assert_eq!(hit.hit_test(25, 5), Some(Hit::Tab(Tab::Connections)));
+        assert_eq!(hit.hit_test(18, 5), None, "the gap between tabs");
+        assert_eq!(hit.hit_test(10, 8), Some(Hit::Row(4)));
+        assert_eq!(hit.hit_test(10, 12), Some(Hit::Row(8)));
+        assert_eq!(hit.hit_test(10, 18), None, "below the table");
+        assert_eq!(hit.hit_test(0, 9), None, "left of the table");
+    }
+
+    fn click(app: &mut App, x: u16, y: u16) {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn clicking_selects_rows_and_switches_tabs() {
+        let mut app = app_with(vec![
+            listener(1, 1, None),
+            listener(2, 2, None),
+            listener(3, 3, None),
+        ]);
+        app.hit = HitMap {
+            tabs: vec![(Tab::Connections, rect(19, 5, 20, 1))],
+            rows: rect(1, 8, 100, 10),
+            row_offset: 0,
+        };
+        click(&mut app, 10, 10); // third row
+        assert_eq!(selected_port(&app), 3);
+        click(&mut app, 10, 8);
+        assert_eq!(selected_port(&app), 1);
+        click(&mut app, 10, 15); // past the last row: ignored
+        assert_eq!(selected_port(&app), 1);
+        click(&mut app, 25, 5);
+        assert_eq!(app.tab, Tab::Connections);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_and_popups_ignore_the_mouse() {
+        let mut app = app_with((1..=6).map(|p| listener(p, p as u64, None)).collect());
+        let wheel = |kind| MouseEvent { kind, column: 5, row: 5, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(selected_port(&app), 4);
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(selected_port(&app), 1);
+
+        app.mode = Mode::Help;
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(selected_port(&app), 1, "mouse is ignored while a popup is open");
+        click(&mut app, 1, 1);
+        assert!(matches!(app.mode, Mode::Help));
     }
 
     #[test]

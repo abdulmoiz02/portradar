@@ -11,10 +11,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Clear, Paragraph, Row as TableRow, Table, Tabs, Wrap};
 
-use crate::app::{App, KillRequest, Mode, Tab};
+use crate::app::{App, KillRequest, Mode, PaletteState, TOUR_STEPS, Tab};
 use crate::browser;
 use crate::inspect::{human_duration, short_duration};
 use crate::model::{EventKind, Group, RowState};
+use crate::palette;
 use crate::services::{Access, service_name};
 use crate::theme::Look;
 use crate::verdict::{Level, Verdict, exposure_note, verdict};
@@ -48,6 +49,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_cards(frame, app, &look, cards);
     }
     render_tabs(frame, app, &look, tabs);
+    app.hit.rows = Rect::default(); // only the table tabs set this
     match app.tab {
         Tab::Events => render_events(frame, app, &look, body),
         _ => render_table(frame, app, &look, body, now),
@@ -60,6 +62,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match &app.mode {
         Mode::ConfirmKill(request) => render_kill_popup(frame, &look, request, area),
         Mode::Help => render_help(frame, &look, area),
+        Mode::Palette(state) => render_palette(frame, &look, state, area),
+        Mode::Tour(step) => render_tour(frame, &look, *step, area),
         _ => {}
     }
 }
@@ -149,7 +153,7 @@ fn render_cards(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
     }
 }
 
-fn render_tabs(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
+fn render_tabs(frame: &mut Frame, app: &mut App, look: &Look, area: Rect) {
     let t = &look.theme;
     let titles: Vec<String> = Tab::ALL
         .iter()
@@ -159,6 +163,20 @@ fn render_tabs(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
             Tab::Events => format!("3 Events ({})", app.tracker.events.len()),
         })
         .collect();
+
+    // Remember where each tab label sits, for mouse clicks. Each label is
+    // padded with one space on both sides and separated by a one-space divider.
+    app.hit.tabs.clear();
+    let mut x = area.x;
+    for (tab, title) in Tab::ALL.iter().zip(&titles) {
+        let width = title.chars().count() as u16 + 2;
+        let right = area.x + area.width;
+        if x < right {
+            app.hit.tabs.push((*tab, Rect::new(x, area.y, width.min(right - x), 1)));
+        }
+        x = x.saturating_add(width + 1);
+    }
+
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
         .style(fg(t.dim))
@@ -262,6 +280,17 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
     drop(groups);
     app.table_state.select(selected_index);
     frame.render_stateful_widget(table, area, &mut app.table_state);
+
+    // Where the data rows ended up (inside the border, below the header),
+    // so clicks can be mapped back to rows.
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 2, // top border + header row
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(3),
+    );
+    app.hit.rows = if area.width >= 2 && area.height >= 3 { inner } else { Rect::default() };
+    app.hit.row_offset = app.table_state.offset();
 
     if total == 0 {
         let filters = app.active_filters();
@@ -607,6 +636,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             (mv, "Scroll", false),
             ("?".into(), "Help", false),
             ("q".into(), "Quit", false),
+            (":".into(), "Menu", false),
             (tabs, "Tabs", false),
         ],
         Tab::Connections => vec![
@@ -614,6 +644,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             ("/".into(), "Search", false),
             ("?".into(), "Help", false),
             ("q".into(), "Quit", false),
+            (":".into(), "Menu", false),
             (tabs, "Tabs", false),
             ("m".into(), "Mine", app.only_mine),
             ("s".into(), "Sort", false),
@@ -629,6 +660,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
                 ("/".into(), "Search", false),
                 ("?".into(), "Help", false),
                 ("q".into(), "Quit", false),
+                (":".into(), "Menu", false),
                 ("k".into(), "Stop", false),
                 ("f".into(), "Free", false),
             ];
@@ -762,7 +794,9 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         ("e  m  h".into(), "show only exposed / only mine / hide system noise"),
         ("s  /  r".into(), "change the sort column / reverse it"),
         ("p".into(), "pause or resume refreshing"),
+        (":  or  Ctrl+P".into(), "command menu: find any action by name"),
         ("q  /  Ctrl+C".into(), "quit"),
+        ("Mouse".into(), "click tabs and rows, wheel scrolls (hold Shift to select text)"),
     ];
     let mut lines = vec![
         Line::styled("Green rows just opened. Red rows just closed.", fg(t.dim)),
@@ -810,6 +844,146 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
             look.block()
                 .border_style(fg(t.accent))
                 .title(Line::styled(" Help ", fg(t.accent).bold())),
+        ),
+        popup,
+    );
+}
+
+fn render_palette(frame: &mut Frame, look: &Look, state: &PaletteState, area: Rect) {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let results = palette::matching(&state.input);
+    let shown = results.len().min(10);
+    // Scroll the window so the highlighted result is always visible.
+    let start = if state.selected >= shown { state.selected + 1 - shown } else { 0 };
+    let width = 66u16.min(area.width);
+    let inner = width.saturating_sub(2) as usize;
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(": ", fg(t.accent).bold()),
+            Span::raw(state.input.clone()),
+            Span::styled(g.cursor, fg(t.warn)),
+        ]),
+        Line::from(""),
+    ];
+    if results.is_empty() {
+        lines.push(Line::styled("No matching command. Try a different word.", fg(t.dim)));
+    }
+    for (i, entry) in results.iter().enumerate().skip(start).take(shown) {
+        let selected = i == state.selected;
+        let marker = if selected { g.row_bar } else { "  " };
+        let key_width = 5usize;
+        let name_width = inner.saturating_sub(marker.chars().count() + key_width);
+        let name: String = entry.name.chars().take(name_width).collect();
+        let text = format!("{marker}{name:<name_width$}{:>key_width$}", entry.key);
+        lines.push(Line::styled(
+            text,
+            if selected {
+                Style::new().bg(t.select_bg).fg(t.select_fg).bold()
+            } else {
+                Style::new()
+            },
+        ));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!("Enter run {} Esc close {} {} choose", g.dot, g.dot, g.keys_move),
+        fg(t.dim),
+    ));
+
+    let height = lines.len() as u16 + 2;
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            look.block()
+                .border_style(fg(t.accent))
+                .title(Line::styled(" Command menu ", fg(t.accent).bold())),
+        ),
+        popup,
+    );
+}
+
+fn render_tour(frame: &mut Frame, look: &Look, step: usize, area: Rect) {
+    let t = &look.theme;
+    let g = &look.glyphs;
+    let key = |k: &str, what: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("{k:<10}"), fg(t.accent).bold()),
+            Span::raw(what.to_string()),
+        ])
+    };
+
+    let (title, mut lines): (&str, Vec<Line>) = match step {
+        0 => (
+            " Welcome to portwatch ",
+            vec![
+                Line::from("Think of your computer as a building."),
+                Line::from(""),
+                Line::from("A port is a numbered door. A program opens a door to wait for"),
+                Line::from("visitors: this is called listening."),
+                Line::from(""),
+                Line::from("portwatch shows every open door and who opened it, live."),
+                Line::from("It can also close a door by stopping the program (always asking first)."),
+            ],
+        ),
+        1 => (
+            " How to read a row ",
+            vec![
+                key("PORT", "the door number, and tcp or udp"),
+                key("SERVICE", "what that number is usually used for (a guess)"),
+                key("ACCESS", "who can knock:"),
+                Line::from(vec![
+                    Span::raw("          "),
+                    Span::styled(format!("{} this PC only", g.local), fg(t.good)),
+                    Span::raw(": nobody else can connect"),
+                ]),
+                Line::from(vec![
+                    Span::raw("          "),
+                    Span::styled(format!("{} whole network", g.whole), fg(t.warn)),
+                    Span::raw(": other devices can try"),
+                ]),
+                key("PROCESS", "the program that opened it, and its PID"),
+                key("UP", "how long it has been open"),
+                Line::from(vec![
+                    Span::styled(format!("{:<10}", "MARK"), fg(t.accent).bold()),
+                    Span::styled(format!("{} ", g.normal), fg(t.dim)),
+                    Span::raw("normal   "),
+                    Span::styled(format!("{} ", g.dev), fg(t.accent)),
+                    Span::raw("your dev server   "),
+                    Span::styled(format!("{} ", g.warn), fg(t.warn)),
+                    Span::raw("worth a look"),
+                ]),
+            ],
+        ),
+        _ => (
+            " Keys to know ",
+            vec![
+                key(g.keys_move, "move up and down"),
+                key("/", "search (try: mysql, network, or a port number)"),
+                key("k", "stop the selected program (asks first)"),
+                key("f", "free a port: stop its program and check it is free"),
+                key("o", "open a port in your web browser"),
+                key(":", "command menu: find any action by name"),
+                key("?", "all keys, and what the columns mean"),
+                key("q", "quit"),
+            ],
+        ),
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!("Step {} of {TOUR_STEPS}   Enter: next   Left: back   Esc: skip", step + 1),
+        fg(t.dim),
+    ));
+
+    let popup = centered(area, 76, lines.len() as u16 + 2);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
+            look.block()
+                .border_style(fg(t.accent))
+                .title(Line::styled(title, fg(t.accent).bold())),
         ),
         popup,
     );
@@ -1105,6 +1279,96 @@ mod tests {
         let screen = draw(&mut app, 110, 30);
         assert!(screen.is_ascii(), "popup is not ASCII:\n{screen}");
         assert!(screen.contains("Free this port"));
+    }
+
+    #[test]
+    fn the_command_menu_shows_typed_text_and_matching_commands() {
+        let mut app = app();
+        app.mode = Mode::Palette(PaletteState { input: "sort".into(), selected: 1 });
+        let screen = draw(&mut app, 100, 30);
+        for expected in ["Command menu", ": sort", "Sort by port", "Sort by uptime", "Enter run"] {
+            assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
+        }
+        assert!(!screen.contains("Quit portwatch"), "filtered out:\n{screen}");
+
+        app.mode = Mode::Palette(PaletteState { input: "zzzz".into(), selected: 0 });
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("No matching command"), "{screen}");
+
+        // A long result list keeps the highlighted entry on screen.
+        app.mode = Mode::Palette(PaletteState { input: String::new(), selected: 20 });
+        let screen = draw(&mut app, 100, 30);
+        assert!(screen.contains("Quit portwatch") || screen.contains("welcome tour"), "{screen}");
+    }
+
+    #[test]
+    fn the_tour_has_three_readable_pages() {
+        let mut app = app();
+        let expectations = [
+            (0, ["Welcome to portwatch", "numbered door", "Step 1 of 3"]),
+            (1, ["How to read a row", "whole network", "Step 2 of 3"]),
+            (2, ["Keys to know", "command menu", "Step 3 of 3"]),
+        ];
+        for (step, expected) in expectations {
+            app.mode = Mode::Tour(step);
+            let screen = draw(&mut app, 100, 30);
+            for text in expected {
+                assert!(screen.contains(text), "page {step} missing {text:?}:\n{screen}");
+            }
+        }
+        // And on a small terminal it must not panic.
+        let _ = draw(&mut app, 40, 10);
+    }
+
+    #[test]
+    fn ascii_mode_also_covers_the_menu_and_the_tour() {
+        let mut app = app().with_look(Look::new(ThemeName::Default, true));
+        select_first(&mut app);
+        for mode in [
+            Mode::Palette(PaletteState::default()),
+            Mode::Tour(0),
+            Mode::Tour(1),
+            Mode::Tour(2),
+        ] {
+            app.mode = mode;
+            let screen = draw(&mut app, 100, 36);
+            assert!(screen.is_ascii(), "not ASCII in {:?}:\n{screen}", app.mode);
+        }
+    }
+
+    #[test]
+    fn mouse_clicks_land_on_what_was_drawn() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let click = |app: &mut App, x: u16, y: u16| {
+            app.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            });
+        };
+
+        let mut app = app();
+        let _ = draw(&mut app, 100, 30);
+        assert_eq!(app.hit.tabs.len(), 3);
+
+        // The second data row is the second port.
+        let rows = app.hit.rows;
+        assert!(rows.height > 2, "{rows:?}");
+        click(&mut app, rows.x + 3, rows.y + 1);
+        assert_eq!(app.selected_group().unwrap().port(), 5432);
+        click(&mut app, rows.x + 3, rows.y);
+        assert_eq!(app.selected_group().unwrap().port(), 3000);
+
+        // The text "2 Connections" is drawn exactly where the hit map says.
+        let (tab, rect) = app.hit.tabs[1];
+        assert_eq!(tab, Tab::Connections);
+        let screen = draw(&mut app, 100, 30);
+        let tab_row = screen.lines().nth(rect.y as usize).unwrap();
+        let drawn: String = tab_row.chars().skip(rect.x as usize).take(rect.width as usize).collect();
+        assert!(drawn.contains("2 Connections"), "hit rect {rect:?} covers {drawn:?}");
+        click(&mut app, rect.x + 2, rect.y);
+        assert_eq!(app.tab, Tab::Connections);
     }
 
     #[test]

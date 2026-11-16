@@ -5,6 +5,7 @@ mod free;
 mod inspect;
 mod kill;
 mod model;
+mod palette;
 mod scanner;
 mod services;
 mod theme;
@@ -17,7 +18,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use ratatui::crossterm::execute;
 
 use app::App;
 
@@ -76,8 +78,22 @@ fn dashboard() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Mouse capture changes how the terminal behaves, so it must be switched
+    // off again on every way out, including a crash.
+    let mouse = loaded.config.mouse;
+    if mouse {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = execute!(io::stdout(), DisableMouseCapture);
+            previous_hook(info);
+        }));
+    }
     let result = run(&mut terminal, &loaded);
     // Always give the terminal back, even if the loop failed.
+    if mouse {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
     let restored = ratatui::try_restore();
 
     if let Err(err) = result.and(restored) {
@@ -103,11 +119,17 @@ fn current_user(is_root: bool) -> String {
 
 fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()> {
     let is_root = nix::unistd::geteuid().is_root();
-    let mut app = App::new(is_root, current_user(is_root)).with_look(loaded.config.look());
+    // As root nothing is ever written (a root-owned file in your home would
+    // get in the way later), so the tour is only offered to normal users.
+    let tour_dir = if is_root { None } else { config::state_dir() };
+    let mut app = App::new(is_root, current_user(is_root))
+        .with_look(loaded.config.look())
+        .with_tour_dir(tour_dir);
     let scan_every = loaded.config.refresh();
     app.rescan();
     match &loaded.warning {
         Some(warning) => app.set_status(warning.clone(), true),
+        None if app.tour_due() => app.start_tour(),
         None => app.welcome(),
     }
     let mut last_scan = Instant::now();
@@ -116,10 +138,10 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
         terminal.draw(|frame| ui::render(frame, &mut app))?;
 
         if event::poll(POLL_EVERY)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key);
-                }
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                _ => {}
             }
         }
 
