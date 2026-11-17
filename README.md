@@ -43,45 +43,45 @@ Type `portradar` and it opens a full-screen dashboard, a bit like `htop` but for
 
 ## Install
 
-portradar needs **Linux** and a recent **stable Rust** toolchain (the project uses Rust edition 2024).
+portradar runs on **Linux** (x86_64 and aarch64).
 
-**1. Install Rust** (skip this if `cargo --version` already works):
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Open a new terminal afterwards so `cargo` is on your `PATH`.
-
-**2. Get the code and install the command:**
+### One command (no Rust needed)
 
 ```bash
-git clone <repository-url> portradar
-cd portradar
-cargo install --path . --locked
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/OWNER/portradar/releases/latest/download/portradar-installer.sh | sh
 ```
 
-This builds a release binary and puts `portradar` in `~/.cargo/bin`. Then run:
+This downloads a ready-made static binary (it runs on any Linux distribution) and puts `portradar` in `~/.cargo/bin`. Then run:
 
 ```bash
 portradar
 ```
 
-If you see "command not found", `~/.cargo/bin` is not on your `PATH`. Add this line to `~/.bashrc` (or your shell's startup file) and open a new terminal:
+If you see "command not found", open a new terminal, or run `. "$HOME/.cargo/env"` in the current one. The installer adds that line to your shell startup file for you.
+
+Prefer to read the script before running it? Download it first with `curl -LsSf <the same URL> -o portradar-installer.sh`, read it, then run `sh portradar-installer.sh`.
+
+### From source
+
+You need a recent **stable Rust** toolchain (the project uses Rust edition 2024). Install Rust first if `cargo --version` does not work:
 
 ```bash
-. "$HOME/.cargo/env"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-**Just trying it out?** Skip the install and run it straight from the project folder:
+Then get the code and install the command:
 
 ```bash
-cargo run --release
+git clone https://github.com/OWNER/portradar
+cd portradar
+cargo install --path . --locked
 ```
+
+**Just trying it out?** Skip the install and run it straight from the project folder with `cargo run --release`.
 
 ### Update
 
-Pull the latest code and reinstall over the old version:
+Run the one-command installer again: it replaces the old version with the newest release. If you installed from source:
 
 ```bash
 git pull
@@ -91,8 +91,9 @@ cargo install --path . --force --locked
 ### Uninstall
 
 ```bash
-cargo uninstall portradar
-rm -rf ~/.config/portradar ~/.local/state/portradar   # optional: settings and the "tour seen" marker
+rm ~/.cargo/bin/portradar        # installed with the one-command installer
+cargo uninstall portradar        # installed from source
+rm -rf ~/.config/portradar ~/.local/state/portradar   # optional: settings, install receipt and the "tour seen" marker
 ```
 
 ## Quick start
