@@ -1,4 +1,6 @@
-<h1 align="center">portradar</h1>
+<p align="center">
+  <img src="docs/logo.svg" alt="portradar" width="380">
+</p>
 
 <p align="center">
   <b>See every network port on your Linux machine, who is using it, and stop it safely, all from one terminal dashboard.</b>

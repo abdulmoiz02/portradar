@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-labelledby="t d"><title id="t">portradar logo</title><desc id="d">A green ring with an open gap, a beam from the centre through the gap to an amber dot.</desc>
+<rect width="200" height="200" rx="44" fill="#300a24"/>
+<g transform="translate(30 30) scale(.7)">
+<path d="M157.07 81.46A60 60 0 1 1 128.17 47.03" fill="none" stroke="#00af5f" stroke-width="22"/>
+<path d="M100 100L145.96 61.43" stroke="#87ffaf" stroke-width="6" stroke-linecap="round"/>
+<circle cx="100" cy="100" r="8" fill="#87ffaf"/>
+<circle cx="145.96" cy="61.43" r="11" fill="#d7af00"/>
+</g>
+</svg>
