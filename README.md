@@ -1,60 +1,101 @@
-# portwatch
+<h1 align="center">portwatch</h1>
 
-An interactive terminal dashboard for monitoring and managing the network ports on your Linux machine.
+<p align="center">
+  <b>See every network port on your Linux machine, who is using it, and stop it safely, all from one terminal dashboard.</b>
+</p>
 
-Type `portwatch` and it opens a full-screen dashboard (like `htop`, but for ports). Quit with `q` and you are back in your shell.
+<p align="center">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
+  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-blue">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-orange">
+</p>
 
-```
- ◉ portwatch   ports on this computer, live                          ● live · 1s
-╭ Open ports ──────╮╭ Exposed ─────────╮╭ Connections ─────╮╭ Hidden ──────────╮
-│        19        ││        7         ││        69        ││        17        │
-│   listening now  ││ open to network  ││    active now    ││ need sudo to see │
-╰──────────────────╯╰──────────────────╯╰──────────────────╯╰──────────────────╯
- 1 Listening (19)   2 Connections (69)   3 Events (0)
-╭ Listening ports · sorted by port ▲ ──────────────────────────────────────────╮
-│  PORT       SERVICE         ACCESS           PROCESS          USER       UP  │
-│▌ 3000/tcp   Dev server      ● this PC only   node 4821        alice      2h  │
-│  5432/tcp   PostgreSQL      ● this PC only   postgres 1302    postgres   5d  │
-│  80/tcp     Web (HTTP)      ▲ whole network  nginx 977        root       9d  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭ node on port 3000 · 127.0.0.1 ───────────────────────────────────────────────╮
-│ node (PID 4821) is listening on port 3000. Only this computer can reach it.  │
-│ Port 3000 is usually Dev server · started 2h 5m ago by alice · 3 open conn…  │
-│ $ node server.js                                                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
- ↑↓  Move   /  Search   k  Stop   ?  Help   q  Quit
-```
+<p align="center">
+  <img src="docs/screenshots/listening.png" alt="portwatch showing listening ports, summary cards and details" width="900">
+</p>
 
-The layout adapts to your terminal: on short windows the summary cards and then the details panel are hidden, and the footer drops its least important keys.
+Type `portwatch` and it opens a full-screen dashboard, a bit like `htop` but for ports. Quit with `q` and you are back in your shell. It reads the kernel's own tables, so it needs no `ss`, `lsof` or root to get started.
 
-## Install and run
+- [What it does](#what-it-does)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [A tour of the dashboard](#a-tour-of-the-dashboard)
+- [Keys](#keys)
+- [The Inspector](#the-inspector-technical-detail-on-request)
+- [Stopping processes safely](#stopping-processes-safely)
+- [The fun parts](#the-fun-parts)
+- [Settings and themes](#settings-optional)
+- [Permissions and security](#permissions-and-security)
+- [Troubleshooting](#troubleshooting)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [Known limits](#known-limits)
+- [License](#license)
 
-Requires Rust (stable) and Linux.
+## What it does
+
+- **Shows what is open.** Every listening port, which program owns it, who started it, how long it has been up, and whether only your computer or the whole network can reach it.
+- **Explains it in plain words.** Each row gets a mark (normal, dev server, worth a look) with the reason, plus a sentence about what that port number is usually used for.
+- **Lets you act.** Stop a program, or free a port and have portwatch check that it really became free. It always asks first and refuses to touch anything dangerous.
+- **Goes deep when you ask.** Press `Enter` for an Inspector with process details, every socket, the systemd service or Docker container it came from, and the raw `/proc` text.
+- **Is also a normal command.** `portwatch list`, `portwatch free 3000` and `portwatch inspect 3000 --json` work in scripts and pipes.
+- **Has some fun in it.** A phosphor radar, history graphs, confetti when a port is freed, "Did you know?" tips and eight colour themes.
+
+## Install
+
+portwatch needs **Linux** and a recent **stable Rust** toolchain (the project uses Rust edition 2024).
+
+**1. Install Rust** (skip this if `cargo --version` already works):
 
 ```bash
-# run straight from the project folder
-cargo run --release
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-# or install the `portwatch` command (goes to ~/.cargo/bin)
-cargo install --path .
+Open a new terminal afterwards so `cargo` is on your `PATH`.
+
+**2. Get the code and install the command:**
+
+```bash
+git clone <repository-url> portwatch
+cd portwatch
+cargo install --path . --locked
+```
+
+This builds a release binary and puts `portwatch` in `~/.cargo/bin`. Then run:
+
+```bash
 portwatch
 ```
 
-If `portwatch` is "command not found" after installing, `~/.cargo/bin` is not on your `PATH`. Add this line to `~/.bashrc` and open a new terminal:
+If you see "command not found", `~/.cargo/bin` is not on your `PATH`. Add this line to `~/.bashrc` (or your shell's startup file) and open a new terminal:
 
 ```bash
 . "$HOME/.cargo/env"
 ```
 
-### Update
-
-After pulling or editing the code, reinstall over the old version:
+**Just trying it out?** Skip the install and run it straight from the project folder:
 
 ```bash
-cargo install --path . --force
+cargo run --release
 ```
 
-### Commands
+### Update
+
+Pull the latest code and reinstall over the old version:
+
+```bash
+git pull
+cargo install --path . --force --locked
+```
+
+### Uninstall
+
+```bash
+cargo uninstall portwatch
+rm -rf ~/.config/portwatch ~/.local/state/portwatch   # optional: settings and the "tour seen" marker
+```
+
+## Quick start
 
 | Command | What it does |
 |---|---|
@@ -68,33 +109,25 @@ cargo install --path . --force
 
 `portwatch free 3000` fixes the classic "address already in use" error. Unlike `fuser -k`, it asks first, tries SIGTERM before anything harsher, refuses to touch PID 1 or itself, and tells you whether the port was actually freed (exit code 0) or who still holds it (exit code 1).
 
-## Using the dashboard
+To see and manage programs that belong to other users, run it with sudo (see [Permissions](#permissions-and-security)):
 
-The first time you start it, a three-page tour explains what a port is and how to read a row. Press `?` for help at any time, or `:` for a command menu where you can find any action by typing its name.
+```bash
+sudo "$(which portwatch)"
+```
 
-| Key | Action |
-|---|---|
-| `↑` `↓` `PgUp` `PgDn` `g` `G` | Move the selection |
-| `←` `→` / `Tab` / `1` `2` `3` `4` | Switch tab: Listening, Connections, Events, Radar |
-| `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
-| `Esc` | Clear the search |
-| `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
-| `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
-| `Enter` | Open the **Inspector**: full technical detail on the selected program (see below) |
-| `t` | Switch the table between the simple view and the technical view |
-| `k` / `K` | Stop the selected program (SIGTERM) / force stop (SIGKILL). Asks to confirm first |
-| `f` | Free the port: stop its program, then check that the port really became free |
-| `o` | Open the port in your web browser (TCP only) |
-| `:` or `Ctrl+P` | Command menu |
-| `p` | Pause or resume refreshing |
-| `T` | Try the next colour theme (lasts until you quit; see Settings to keep one) |
-| `?` | Help |
-| `q` / `Ctrl+C` | Quit |
+## A tour of the dashboard
 
-The mouse works too: click a tab or a row, scroll with the wheel. (While the mouse is captured, hold `Shift` to select text with the terminal. Turn it off with `mouse = false` in the settings file.)
+The first time you start portwatch, a three-page tour explains what a port is and how to read a row. Press `?` for help at any time, or `:` for a command menu where you can find any action by typing its name.
 
-- **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see.
-- **One row per program per port.** If a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Programs you can see are never merged with each other (different PIDs stay separate). Hidden owners are grouped by account and port. `portwatch list` still shows every socket.
+<p align="center">
+  <img src="docs/screenshots/tour.png" alt="The first-run tour" width="640">
+</p>
+
+### Listening ports
+
+The main view. There is **one row per program per port**: if a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Programs you can see are never merged with each other (different PIDs stay separate). Hidden owners are grouped by account and port. `portwatch list` still shows every socket.
+
+- **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see. Each card has a small history graph.
 - **The mark in the first column** is a quick opinion, with the reason in the Details panel:
   - `✓` looks normal (dim)
   - `★` a development server you started
@@ -109,11 +142,79 @@ The mouse works too: click a tab or a row, scroll with the wheel. (While the mou
 - **UP** is how long the program has been running.
 - **Green** rows opened in the last few seconds. **Red, struck-through** rows just closed.
 - The **Details** panel explains the selected port in plain sentences, then shows how long it has been running, its open connections, the full command and its folder.
-- The **Events** tab logs every listening port that opens or closes while portwatch is running.
+- Press `t` to swap the friendly columns for the **technical table**: the exact bind addresses, kernel socket state, PID and inode (a `+2` means two more sockets are merged into the row).
+
+<p align="center">
+  <img src="docs/screenshots/technical.png" alt="The technical table view" width="800">
+</p>
+
+### Connections
+
+Every active connection: local and remote address, state, and the program that owns it.
+
+<p align="center">
+  <img src="docs/screenshots/connections.png" alt="The Connections tab" width="800">
+</p>
+
+### Events
+
+A log of every listening port that opens or closes while portwatch is running.
+
+<p align="center">
+  <img src="docs/screenshots/events.png" alt="The Events tab" width="800">
+</p>
+
+### Radar
+
+Your listening ports as dots on three rings. See [The fun parts](#the-fun-parts).
+
+<p align="center">
+  <img src="docs/screenshots/radar.png" alt="The radar tab: a phosphor scope with side panels" width="900">
+</p>
+
+### Command menu and help
+
+`:` (or `Ctrl+P`) opens a menu of every action. Type a few letters to filter it. `?` shows what the columns and marks mean.
+
+<p align="center">
+  <img src="docs/screenshots/menu.png" alt="The command menu" width="720">
+  <img src="docs/screenshots/help.png" alt="The help screen" width="720">
+</p>
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `↑` `↓` `PgUp` `PgDn` `g` `G` | Move the selection |
+| `←` `→` / `Tab` / `1` `2` `3` `4` | Switch tab: Listening, Connections, Events, Radar |
+| `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
+| `Esc` | Clear the search |
+| `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
+| `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
+| `Enter` | Open the **Inspector** (see below) |
+| `t` | Switch the table between the simple view and the technical view |
+| `k` / `K` | Stop the selected program (SIGTERM) / force stop (SIGKILL). Asks to confirm first |
+| `f` | Free the port: stop its program, then check that the port really became free |
+| `o` | Open the port in your web browser (TCP only) |
+| `:` or `Ctrl+P` | Command menu |
+| `p` | Pause or resume refreshing |
+| `T` | Try the next colour theme (lasts until you quit; see Settings to keep one) |
+| `?` | Help |
+| `q` / `Ctrl+C` | Quit |
+
+The mouse works too: click a tab or a row, scroll with the wheel. (While the mouse is captured, hold `Shift` to select text with the terminal. Turn it off with `mouse = false` in the settings file.)
+
+The layout adapts to your terminal. On short windows the summary cards and then the details panel are hidden, and the footer drops its least important keys. It works down to 80×24.
 
 ### The Inspector (technical detail on request)
 
 Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` goes back. Switch tabs with `←` `→` or `1`-`6`, scroll with `↑` `↓` `PgUp` `PgDn` `Home` `End` or the wheel.
+
+<p align="center">
+  <img src="docs/screenshots/inspector-overview.png" alt="Inspector, Overview tab" width="720">
+  <img src="docs/screenshots/inspector-process.png" alt="Inspector, Process tab" width="720">
+  <img src="docs/screenshots/inspector-sockets.png" alt="Inspector, Sockets tab" width="720">
+</p>
 
 | Tab | Shows |
 |---|---|
@@ -131,9 +232,21 @@ Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` go
 - The Inspector refreshes with every scan. If the program exits while you are looking, its last known details stay on screen with a notice, and the actions are switched off.
 - Details of other users' programs are not readable without `sudo`; the Inspector says so instead of guessing.
 
-The **technical table** (`t`) swaps the friendly columns for the raw facts: the exact bind addresses, kernel socket state, PID and inode (a `+2` means two more sockets are merged into the row).
+## Stopping processes safely
 
-### The fun parts
+<p align="center">
+  <img src="docs/screenshots/stop.png" alt="The stop confirmation popup" width="800">
+</p>
+
+- You always confirm first, and the popup shows the process name, PID and port.
+- It refuses to kill PID 1 or portwatch itself.
+- Just before sending the signal it checks that the PID still belongs to the same program (PIDs get reused), so it cannot hit the wrong process.
+- If the process is a **Docker container** or a **systemd service**, the popup and Details panel warn you that killing it may just restart it, and tell you the right command (`docker stop ...` or `sudo systemctl stop ...`).
+- Killing only works from the Listening tab.
+- `f` and `portwatch free` do not take "I sent the signal" for success: they scan again and say whether the port is free or who still holds it. Servers that run several worker processes may need `K`.
+- `o` never opens a browser when portwatch runs as root.
+
+## The fun parts
 
 - **Radar** (`4`): your listening ports as dots on three rings, drawn as a phosphor scope with smooth Braille lines.
   - The centre is this computer. The inner ring is ports only this computer can reach, the middle ring one network, the outer ring the whole network, so the more open a port is, the further out it sits. The rings are named on the screen.
@@ -147,19 +260,13 @@ The **technical table** (`t`) swaps the friendly columns for the raw facts: the 
 - **Did you know?** A line under the table with a fact about the selected port (SSH, DNS, MySQL, Redis and so on, kept to default ports and what the protocol does), or a tip about portwatch that changes every 15 seconds.
 - **Themes:** `default`, `light`, `mono`, `nord`, `dracula`, `cyberpunk`, `matrix` and `colorblind` (blue and orange instead of green and red). `T` cycles through them. They use 256-colour values, so they work on any 256-colour terminal.
 
+<p align="center">
+  <img src="docs/screenshots/themes.png" alt="Four of the themes: nord, dracula, cyberpunk and matrix" width="900">
+</p>
+
 For a perfectly still screen set `animations = false` (no sweep, ripples or confetti; the radar stays put). `tips = false` hides the Did you know? line.
 
-### Stopping processes safely
-
-- You always confirm first, and the popup shows the process name, PID and port.
-- It refuses to kill PID 1 or portwatch itself.
-- Just before sending the signal it checks that the PID still belongs to the same program (PIDs get reused), so it cannot hit the wrong process.
-- If the process is a **Docker container** or a **systemd service**, the popup and Details panel warn you that killing it may just restart it, and tell you the right command (`docker stop ...` or `sudo systemctl stop ...`).
-- Killing only works from the Listening tab.
-- `f` and `portwatch free` do not take "I sent the signal" for success: they scan again and say whether the port is free or who still holds it. Servers that run several worker processes may need `K`.
-- `o` never opens a browser when portwatch runs as root.
-
-### Settings (optional)
+## Settings (optional)
 
 portwatch works without any settings. To change them, create `~/.config/portwatch/config.toml` (run `portwatch config` to see the exact path and a template):
 
@@ -175,7 +282,7 @@ truecolor = true        # false = never use smooth 24-bit colour gradients
 
 portwatch only ever reads this file. If it has a mistake, portwatch shows a message in the footer and uses the defaults. The only file portwatch writes is a tiny marker (`~/.local/state/portwatch/tour-seen`) so the tour is shown once, and never when run as root.
 
-### Permissions
+## Permissions and security
 
 As a normal user, the Linux kernel only lets you see which process owns a port if it is **your own** process. Other ports still appear, but the process shows as `? needs sudo`, and the **Hidden** card counts them. To see and manage everything:
 
@@ -184,6 +291,28 @@ sudo "$(which portwatch)"
 ```
 
 (Plain `sudo portwatch` usually fails because sudo does not search `~/.cargo/bin`.)
+
+What portwatch does to keep you safe:
+
+- It **never sends data anywhere**. The only network activity is the reverse DNS lookup you trigger with `r` in the Inspector.
+- Environment variable **values are masked** and never appear in the JSON, the Raw tab or the text report.
+- The settings file is **read-only** to portwatch, and no files are written when it runs as root.
+- It refuses to stop PID 1 or itself, re-checks the PID before signalling, and always asks first.
+- `o` is refused as root, so it never opens a browser with elevated rights.
+
+## Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| `portwatch: command not found` | Add `. "$HOME/.cargo/env"` to `~/.bashrc` and open a new terminal (see [Install](#install)) |
+| `sudo portwatch` says command not found | Use `sudo "$(which portwatch)"` |
+| Many rows say `? needs sudo` | That is the kernel hiding other users' processes. Run it with sudo to see them |
+| The radar glow looks flat or blocky | Your terminal is not reporting 24-bit colour. Check `echo $COLORTERM` (it should print `truecolor` or `24bit`). Under `sudo`, use `sudo -E` to keep it |
+| Boxes or odd symbols instead of icons | Your font lacks some Unicode symbols. Set `ascii = true` in the settings file |
+| `y` says it asked the terminal to copy but nothing was copied | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `portwatch inspect <port> --json` |
+| The text cannot be selected with the mouse | Hold `Shift` while selecting, or set `mouse = false` |
+| `portwatch` prints "use portwatch list" | The dashboard needs a real terminal; it was started without one (for example in a pipe) |
+| A killed program came straight back | It is probably a Docker container or systemd service that restarts itself. Use the command shown in the popup |
 
 ## How it works
 
@@ -198,12 +327,27 @@ sudo "$(which portwatch)"
 ## Development
 
 ```bash
-cargo test                                            # unit tests
-cargo test print_sample_screen -- --ignored --nocapture   # preview the layout as text
-cargo run                                             # run the dashboard
+cargo test                                                # unit tests
+cargo run                                                 # run the dashboard
+cargo test print_sample_screens -- --ignored --nocapture  # preview the layout as text
 ```
 
 The dashboard needs a real terminal. Without one (for example in a pipe), `portwatch` tells you to use `portwatch list`.
+
+### Regenerating the screenshots
+
+The images in `docs/screenshots/` are drawn from portwatch's real renderer using made-up demo data (no real programs or paths). To rebuild them after a UI change you need Python 3, [Pillow](https://pypi.org/project/pillow/) and the DejaVu Sans Mono font:
+
+```bash
+PORTWATCH_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
+python3 docs/render_screenshots.py /tmp/shots docs/screenshots
+```
+
+The Inspector screenshots start a throwaway `python3 -m http.server` on port 8000 for a few seconds, so that port must be free.
+
+### Contributing
+
+Issues and pull requests are welcome. Please run `cargo test` before sending a change, and keep commit messages to one short line.
 
 ## Known limits
 
@@ -211,3 +355,7 @@ The dashboard needs a real terminal. Without one (for example in a pipe), `portw
 - Other users' processes are hidden unless you run as root.
 - Only TCP and UDP sockets are shown (not Unix sockets).
 - No firewall management yet.
+
+## License
+
+portwatch is open source under the [MIT License](LICENSE): anyone can use, copy, change and share it, including in commercial work, as long as the copyright notice stays with it.

@@ -3277,6 +3277,198 @@ mod tests {
         std::fs::write(path, page).unwrap();
     }
 
+    /// A believable machine with made-up programs, so documentation
+    /// screenshots never show real processes or paths.
+    fn demo_app(theme: ThemeName) -> App {
+        let wall = SystemTime::now();
+        let now_secs = wall.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let proc = |port: u16, inode: u64, name: &str, pid: u32, ip: &str, up: u64, user: &str| {
+            let mut e = at(entry(port, inode, name, pid), ip);
+            e.user = user.into();
+            e.process.as_mut().unwrap().started_at = Some(now_secs - up);
+            e
+        };
+        let hidden = |port: u16, inode: u64, ip: &str, user: &str| {
+            let mut e = at(entry(port, inode, "x", 1), ip);
+            e.user = user.into();
+            e.process = None;
+            e
+        };
+        let conn = |port: u16, inode: u64, name: &str, pid: u32, remote: &str| {
+            let mut e = at(entry(port, inode, name, pid), "192.168.1.23");
+            e.listening = false;
+            e.state = "Established".into();
+            e.remote = remote.parse().unwrap();
+            e
+        };
+        let (h, d) = (3_600u64, 86_400u64);
+        let base = vec![
+            hidden(22, 10, "0.0.0.0", "root"),
+            hidden(53, 11, "127.0.0.53", "systemd-resolve"),
+            hidden(631, 12, "127.0.0.1", "root"),
+            hidden(5432, 13, "127.0.0.1", "postgres"),
+            proc(3000, 14, "node", 4821, "127.0.0.1", 2 * h + 300, "alice"),
+            proc(6379, 15, "redis-server", 1733, "127.0.0.1", 3 * d, "alice"),
+            proc(27017, 16, "mongod", 1802, "0.0.0.0", 3 * d, "alice"),
+            conn(40112, 30, "firefox", 5100, "140.82.112.4:443"),
+            conn(40118, 31, "firefox", 5100, "151.101.1.69:443"),
+            conn(40210, 32, "firefox", 5100, "34.107.243.93:443"),
+            conn(51234, 33, "code", 4410, "140.82.113.26:443"),
+            conn(41990, 34, "slack", 5620, "52.94.236.248:443"),
+            conn(3000, 35, "firefox", 5100, "127.0.0.1:41822"),
+            conn(36000, 36, "spotify", 5710, "35.186.224.25:443"),
+        ];
+        let mut app = new_app(false).with_look(Look::new(theme, false)).with_motion(true, true);
+        app.look.truecolor = true;
+        app.frozen_clock = Some(Duration::from_secs_f32(2.9));
+        // Build a little history for the Events tab: things open and close.
+        let t0 = Instant::now() - Duration::from_secs(120);
+        let at_t = |secs: u64| (t0 + Duration::from_secs(secs), wall - Duration::from_secs(120 - secs));
+        let vite = proc(5173, 17, "node", 5003, "127.0.0.1", 40 * 60, "alice");
+        let py = proc(8000, 18, "python3", 5304, "0.0.0.0", 12 * 60, "alice");
+        let temp = proc(8765, 19, "python3", 5400, "127.0.0.1", 60, "alice");
+        let debug = proc(9229, 20, "node", 4821, "127.0.0.1", 2 * h + 300, "alice");
+        let mut set = base.clone();
+        let steps: Vec<(u64, Vec<PortEntry>)> = vec![
+            (0, set.clone()),
+            (30, { set.push(vite.clone()); set.clone() }),
+            (55, { set.push(py.clone()); set.push(debug.clone()); set.clone() }),
+            (80, { set.push(temp.clone()); set.clone() }),
+            (100, { set.pop(); set.clone() }),
+            (119, set.clone()),
+        ];
+        for (secs, entries) in steps {
+            let (i, w) = at_t(secs);
+            app.tracker.update(entries, i, w);
+        }
+        for i in 0..60u32 {
+            let wobble = |lo: u32, hi: u32| lo + (i * 7 + i / 3) % (hi - lo + 1);
+            app.history.record(
+                10 + usize::from(i > 25) + usize::from(i > 40),
+                2 + usize::from(i > 40),
+                wobble(5, 11) as usize,
+                4,
+            );
+        }
+        app.tab = Tab::Listening;
+        let key = app.visible().into_iter().find(|g| g.first().entry.local.port() == 3000).map(|g| g.key());
+        app.selected = key;
+        app.details = Some(crate::inspect::Details {
+            cmdline: "node server.js --port 3000".into(),
+            cwd: Some("/home/alice/projects/shop-api".into()),
+            running_for_secs: Some(2 * h + 300),
+            hint: None,
+        });
+        app
+    }
+
+    /// Writes the screens the README shows as JSON cell dumps (a script turns
+    /// them into PNGs): `PORTWATCH_SHOTS=/dir cargo test dump_screenshots -- --ignored`
+    #[test]
+    #[ignore]
+    fn dump_screenshots() {
+        use ratatui::crossterm::event::KeyCode;
+        use ratatui::style::Modifier as M;
+        let Some(dir) = std::env::var_os("PORTWATCH_SHOTS").map(std::path::PathBuf::from) else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = |name: &str, app: &mut App, w: u16, h: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| render(f, app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut cells = Vec::new();
+            for y in 0..h {
+                for x in 0..w {
+                    let c = &buffer[(x, y)];
+                    let m = c.modifier;
+                    cells.push(serde_json::json!([
+                        c.symbol(),
+                        xterm_css(c.fg, "default"),
+                        xterm_css(c.bg, "default"),
+                        u8::from(m.contains(M::BOLD))
+                            | u8::from(m.contains(M::DIM)) << 1
+                            | u8::from(m.contains(M::CROSSED_OUT)) << 2
+                            | u8::from(m.contains(M::REVERSED)) << 3
+                            | u8::from(m.contains(M::ITALIC)) << 4
+                            | u8::from(m.contains(M::UNDERLINED)) << 5,
+                    ]));
+                }
+            }
+            let doc = serde_json::json!({ "width": w, "height": h, "cells": cells });
+            std::fs::write(dir.join(format!("{name}.json")), doc.to_string()).unwrap();
+        };
+
+        let mut app = demo_app(ThemeName::Default);
+        save("listening", &mut app, 110, 32);
+        app.tab = Tab::Connections;
+        app.selected = None;
+        save("connections", &mut app, 110, 26);
+        app.tab = Tab::Events;
+        save("events", &mut app, 110, 22);
+
+        let mut radar = demo_app(ThemeName::Default);
+        radar.tab = Tab::Radar;
+        save("radar", &mut radar, 126, 38);
+
+        let mut kill = demo_app(ThemeName::Default);
+        press(&mut kill, KeyCode::Char('k'));
+        save("stop", &mut kill, 110, 28);
+
+        let mut menu = demo_app(ThemeName::Default);
+        press(&mut menu, KeyCode::Char(':'));
+        save("menu", &mut menu, 100, 26);
+
+        let mut help = demo_app(ThemeName::Default);
+        press(&mut help, KeyCode::Char('?'));
+        save("help", &mut help, 100, 42);
+
+        let mut tour = demo_app(ThemeName::Default);
+        tour.mode = Mode::Tour(0);
+        save("tour", &mut tour, 100, 28);
+
+        let mut technical = demo_app(ThemeName::Default);
+        press(&mut technical, KeyCode::Char('t'));
+        save("technical", &mut technical, 110, 24);
+
+        for theme in [ThemeName::Nord, ThemeName::Dracula, ThemeName::Cyberpunk, ThemeName::Matrix] {
+            let mut t = demo_app(theme);
+            save(&format!("theme-{}", format!("{theme:?}").to_lowercase()), &mut t, 100, 26);
+        }
+
+        // The Inspector needs a real process to read from /proc: a throwaway
+        // web server in an empty folder, so no personal data shows.
+        let empty = std::env::temp_dir().join(format!("portwatch-demo-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let mut child = std::process::Command::new("python3")
+            .args(["-m", "http.server", "8000", "--bind", "127.0.0.1"])
+            .current_dir(&empty)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("python3 is needed for the Inspector screenshots");
+        std::thread::sleep(Duration::from_millis(800));
+        let real: Vec<PortEntry> = crate::scanner::scan()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.listening && e.local.port() == 8000 && e.process.as_ref().is_some_and(|p| p.pid == child.id()))
+            .collect();
+        assert!(!real.is_empty(), "the demo web server did not start on 8000");
+        let mut live = new_app(false).with_look(Look::new(ThemeName::Default, false));
+        live.tracker.update(real, Instant::now() - Duration::from_secs(60), SystemTime::now());
+        select_first(&mut live);
+        press(&mut live, KeyCode::Enter);
+        go_to(&mut live, '1');
+        save("inspector-overview", &mut live, 100, 28);
+        go_to(&mut live, '2');
+        save("inspector-process", &mut live, 100, 30);
+        go_to(&mut live, '3');
+        save("inspector-sockets", &mut live, 100, 22);
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
     /// Preview the layout as plain text:
     /// `cargo test print_sample_screens -- --ignored --nocapture`
     #[test]
