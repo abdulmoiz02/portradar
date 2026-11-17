@@ -2333,6 +2333,7 @@ mod tests {
         app.mode = Mode::ConfirmKill(KillRequest {
             pid: 1234,
             name: "node".into(),
+            started_at: None,
             protocol: Protocol::Tcp,
             port: 3000,
             force: false,
@@ -2367,6 +2368,7 @@ mod tests {
         app.mode = Mode::ConfirmKill(KillRequest {
             pid: 1234,
             name: "node".into(),
+            started_at: None,
             protocol: Protocol::Tcp,
             port: 3000,
             force: true,
@@ -3158,6 +3160,7 @@ mod tests {
         app.mode = Mode::ConfirmKill(KillRequest {
             pid: 900_001,
             name: "node".into(),
+            started_at: None,
             protocol: Protocol::Tcp,
             port: 3000,
             force: false,

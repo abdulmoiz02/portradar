@@ -53,9 +53,7 @@ pub fn inspect(pid: u32, process_name: &str) -> Details {
         .map(|parts| parts.join(" "))
         .unwrap_or_default();
     let cwd = process.cwd().ok().map(|p| p.display().to_string());
-    let running_for_secs = process.stat().ok().and_then(|stat| {
-        let boot = procfs::boot_time_secs().ok()?;
-        let started = boot + stat.starttime / procfs::ticks_per_second();
+    let running_for_secs = crate::scanner::started_at(pid).and_then(|started| {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         Some(now.saturating_sub(started))
     });

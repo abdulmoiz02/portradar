@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::inspect::{human_duration, inspect};
 use crate::kill;
-use crate::scanner::{PortEntry, Protocol, scan};
+use crate::scanner::{PortEntry, printable, scan};
 
 /// How long to wait for the port to be released after signalling.
 pub const WAIT_FOR_RELEASE: Duration = Duration::from_secs(3);
@@ -20,6 +20,7 @@ pub const WAIT_FOR_RELEASE: Duration = Duration::from_secs(3);
 pub struct Holder {
     pub pid: u32,
     pub name: String,
+    pub started_at: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,7 +50,7 @@ pub fn lookup(entries: &[PortEntry], port: u16) -> Lookup {
     let mut holders: Vec<Holder> = listeners
         .iter()
         .filter_map(|e| e.process.as_ref())
-        .map(|p| Holder { pid: p.pid, name: p.name.clone() })
+        .map(|p| Holder { pid: p.pid, name: p.name.clone(), started_at: p.started_at })
         .collect();
     holders.sort();
     holders.dedup();
@@ -87,10 +88,7 @@ pub fn protocols_label(entries: &[PortEntry], port: u16) -> String {
     let mut names: Vec<String> = entries
         .iter()
         .filter(|e| e.listening && e.local.port() == port)
-        .map(|e| match e.protocol {
-            Protocol::Tcp => "tcp".to_string(),
-            Protocol::Udp => "udp".to_string(),
-        })
+        .map(|e| e.protocol.to_string())
         .collect();
     names.sort();
     names.dedup();
@@ -166,12 +164,12 @@ fn free_port(port: u16, yes: bool, force: bool) -> io::Result<ExitCode> {
             .running_for_secs
             .map(|s| format!(", running for {}", human_duration(s)))
             .unwrap_or_default();
-        println!("  {} (PID {}){age}", holder.name, holder.pid);
+        println!("  {} (PID {}){age}", printable(&holder.name), holder.pid);
         if !details.cmdline.is_empty() {
-            println!("    $ {}", details.cmdline);
+            println!("    $ {}", printable(&details.cmdline));
         }
         if let Some(hint) = details.hint {
-            println!("    ! {}", hint.advice());
+            println!("    ! {}", printable(&hint.advice()));
         }
     }
     if !hidden_users.is_empty() {
@@ -198,14 +196,16 @@ fn free_port(port: u16, yes: bool, force: bool) -> io::Result<ExitCode> {
     }
 
     for holder in &holders {
-        match kill::stop(holder.pid, &holder.name, force) {
+        match kill::stop(holder.pid, &holder.name, holder.started_at, force) {
             Ok(()) => println!(
                 "Sent {} to {} (PID {}).",
                 if force { "SIGKILL" } else { "SIGTERM" },
-                holder.name,
+                printable(&holder.name),
                 holder.pid
             ),
-            Err(err) => eprintln!("Could not stop {} (PID {}): {err}", holder.name, holder.pid),
+            Err(err) => {
+                eprintln!("Could not stop {} (PID {}): {err}", printable(&holder.name), holder.pid)
+            }
         }
     }
 
@@ -218,7 +218,7 @@ fn free_port(port: u16, yes: bool, force: bool) -> io::Result<ExitCode> {
         Lookup::Held { holders, .. } => {
             let names: Vec<String> = holders
                 .iter()
-                .map(|h| format!("{} (PID {})", h.name, h.pid))
+                .map(|h| format!("{} (PID {})", printable(&h.name), h.pid))
                 .collect();
             eprintln!(
                 "Port {port} is still in use by {}.{}",
@@ -240,7 +240,8 @@ fn free_port(port: u16, yes: bool, force: bool) -> io::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::ProcessInfo;
+    use crate::scanner::{ProcessInfo, Protocol};
+    use std::net::TcpListener;
 
     fn listener(proto: Protocol, port: u16, program: Option<(&str, u32)>, user: &str) -> PortEntry {
         PortEntry {
@@ -279,7 +280,7 @@ mod tests {
         let entries = vec![listener(Protocol::Tcp, 3000, Some(("node", 42)), "alice"), v6];
         match lookup(&entries, 3000) {
             Lookup::Held { holders, hidden_users } => {
-                assert_eq!(holders, vec![Holder { pid: 42, name: "node".into() }]);
+                assert_eq!(holders, vec![Holder { pid: 42, name: "node".into(), started_at: None }]);
                 assert!(hidden_users.is_empty());
             }
             other => panic!("unexpected {other:?}"),
@@ -309,6 +310,24 @@ mod tests {
             lookup(&entries, 631),
             Lookup::OnlyHidden { users: vec!["root".to_string()] }
         );
+    }
+
+    #[test]
+    fn waiting_on_a_free_port_returns_at_once() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let started = Instant::now();
+        assert_eq!(wait_until_free(port, Duration::from_secs(2)).unwrap(), Lookup::Free);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn waiting_gives_up_and_names_who_still_holds_the_port() {
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        match wait_until_free(port, Duration::from_millis(300)).unwrap() {
+            Lookup::Held { holders, .. } => assert_eq!(holders[0].pid, std::process::id()),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

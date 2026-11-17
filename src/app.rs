@@ -71,6 +71,7 @@ pub struct Confetti {
 pub struct KillRequest {
     pub pid: u32,
     pub name: String,
+    pub started_at: Option<u64>,
     pub protocol: Protocol,
     pub port: u16,
     pub force: bool,
@@ -475,7 +476,12 @@ impl App {
     // ---- data -------------------------------------------------------
 
     pub fn rescan(&mut self) {
-        match scanner::scan() {
+        self.apply_scan(scanner::scan());
+    }
+
+    /// Take the result of a scan, which the main loop may have run on another thread.
+    pub fn apply_scan(&mut self, result: Result<Vec<scanner::PortEntry>, procfs::ProcError>) {
+        match result {
             Ok(entries) => {
                 self.tracker
                     .update(entries, Instant::now(), SystemTime::now());
@@ -1166,6 +1172,7 @@ impl App {
         self.mode = Mode::ConfirmKill(KillRequest {
             pid: process.pid,
             name: process.name,
+            started_at: process.started_at,
             protocol,
             port,
             force,
@@ -1176,7 +1183,7 @@ impl App {
 
     fn confirm_kill(&mut self, request: KillRequest) {
         let signal = if request.force { "SIGKILL" } else { "SIGTERM" };
-        match kill::stop(request.pid, &request.name, request.force) {
+        match kill::stop(request.pid, &request.name, request.started_at, request.force) {
             Ok(()) => {
                 if request.free {
                     self.pending_free = Some(PendingFree {

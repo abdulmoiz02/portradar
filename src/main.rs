@@ -21,6 +21,7 @@ mod verdict;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write as _};
 use std::process::ExitCode;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -139,6 +140,9 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
         .with_tour_dir(tour_dir);
     let scan_every = loaded.config.refresh();
     app.rescan();
+    // Later scans run on another thread, so a slow /proc walk never delays a key press.
+    let (scan_tx, scan_rx) = mpsc::channel();
+    let mut scanning = false;
     match &loaded.warning {
         Some(warning) => app.set_status(warning.clone(), true),
         None if app.tour_due() => app.start_tour(),
@@ -176,11 +180,19 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
             let _ = out.flush();
         }
 
-        let due = last_scan.elapsed() >= scan_every;
-        if app.rescan_now || (due && !app.paused) {
-            app.rescan();
-            app.rescan_now = false;
+        if let Ok(result) = scan_rx.try_recv() {
+            app.apply_scan(result);
+            scanning = false;
             last_scan = Instant::now();
+        }
+        let due = last_scan.elapsed() >= scan_every;
+        if !scanning && (app.rescan_now || (due && !app.paused)) {
+            app.rescan_now = false;
+            scanning = true;
+            let tx = scan_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(scanner::scan());
+            });
         }
     }
     Ok(())
@@ -269,6 +281,6 @@ fn list(args: &[String]) -> ExitCode {
             "{hidden} without process info (owned by other users; run `sudo \"$(which portradar)\" list` to see them)"
         );
     }
-    let _ = io::stdout().write_all(out.as_bytes());
+    let _ = io::stdout().write_all(scanner::printable(&out).as_bytes());
     ExitCode::SUCCESS
 }

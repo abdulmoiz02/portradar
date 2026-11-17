@@ -6,7 +6,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use procfs::net::{TcpState, tcp, tcp6, udp, udp6};
-use procfs::process::{FDTarget, all_processes};
+use procfs::process::{FDTarget, Process, all_processes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
@@ -170,6 +170,18 @@ fn socket_owners() -> HashMap<u64, ProcessInfo> {
     owners
 }
 
+/// When `pid` started, in seconds since the Unix epoch.
+pub fn started_at(pid: u32) -> Option<u64> {
+    let stat = Process::new(pid as i32).ok()?.stat().ok()?;
+    Some(procfs::boot_time_secs().ok()? + stat.starttime / procfs::ticks_per_second().max(1))
+}
+
+/// Text from /proc that is safe to print: control characters, such as
+/// terminal escape codes in a program's name, become `?`. Newlines stay.
+pub fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() && c != '\n' { '?' } else { c }).collect()
+}
+
 fn user_name(uid: u32) -> String {
     nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
         .ok()
@@ -182,6 +194,19 @@ fn user_name(uid: u32) -> String {
 mod tests {
     use super::*;
     use std::net::{TcpListener, UdpSocket};
+
+    #[test]
+    fn escape_codes_are_not_printable_but_newlines_are() {
+        assert_eq!(printable("ev\x1b[31mIL\x07\n"), "ev?[31mIL?\n");
+        assert_eq!(printable("plain text"), "plain text");
+    }
+
+    #[test]
+    fn started_at_matches_the_scan_for_our_own_process() {
+        let _socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let scanned = scan().unwrap().into_iter().find_map(|e| e.process.filter(|p| p.pid == std::process::id()));
+        assert_eq!(started_at(std::process::id()), scanned.unwrap().started_at);
+    }
 
     #[test]
     fn finds_our_own_tcp_listener() {
