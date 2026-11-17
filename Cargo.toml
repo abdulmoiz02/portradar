@@ -5,7 +5,7 @@ edition = "2024"
 description = "Interactive terminal dashboard to monitor and manage network ports on Linux"
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/OWNER/portradar"
+repository = "https://github.com/abdulmoiz02/portradar"
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

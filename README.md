@@ -50,7 +50,7 @@ portradar runs on **Linux** (x86_64 and aarch64).
 ### One command (no Rust needed)
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/OWNER/portradar/releases/latest/download/portradar-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/abdulmoiz02/portradar/releases/latest/download/portradar-installer.sh | sh
 ```
 
 This downloads a ready-made static binary (it runs on any Linux distribution) and puts `portradar` in `~/.cargo/bin`. Then run:
@@ -74,7 +74,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Then get the code and install the command:
 
 ```bash
-git clone https://github.com/OWNER/portradar
+git clone https://github.com/abdulmoiz02/portradar
 cd portradar
 cargo install --path . --locked
 ```
