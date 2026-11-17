@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn a_working_tool_is_used_and_fed_the_text() {
         // `cat > file` accepts stdin and exits: a stand-in for xclip.
-        let dir = std::env::temp_dir().join(format!("portwatch-clip-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("portradar-clip-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("copied.txt");
         let ok = try_tool("sh", &["-c", &format!("cat > {}", out.display())], "hello clipboard");
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_missing_or_failing_tool_is_not_success() {
-        assert!(!try_tool("portwatch-no-such-program", &[], "x"));
+        assert!(!try_tool("portradar-no-such-program", &[], "x"));
         assert!(!try_tool("sh", &["-c", "cat >/dev/null; exit 3"], "x"));
     }
 

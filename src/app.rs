@@ -228,7 +228,7 @@ pub struct App {
     pub pending_free: Option<PendingFree>,
     /// Show raw facts (bind addresses, kernel state, inode) in the table.
     pub technical: bool,
-    /// When portwatch started: the radar sweep and the tips follow this clock.
+    /// When portradar started: the radar sweep and the tips follow this clock.
     pub started: Instant,
     /// Tests set this to freeze the clock.
     pub frozen_clock: Option<Duration>,
@@ -1248,7 +1248,7 @@ impl App {
     fn request_open(&mut self) {
         if self.is_root {
             self.set_status(
-                "Not opening a browser as root. Run portwatch as your normal user for this",
+                "Not opening a browser as root. Run portradar as your normal user for this",
                 true,
             );
             return;
@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("portwatch-app-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("portradar-app-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -1765,7 +1765,7 @@ mod tests {
 
     #[test]
     fn enter_opens_the_inspector_and_esc_or_q_close_it_without_quitting() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         let state = inspector(&app);
         assert_eq!(state.tab, InspectorTab::Overview);
@@ -1786,7 +1786,7 @@ mod tests {
 
     #[test]
     fn enter_does_nothing_on_the_events_tab_or_an_empty_table() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         press(&mut app, KeyCode::Char('3'));
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
@@ -1810,7 +1810,7 @@ mod tests {
         }
         press(&mut app, KeyCode::Esc);
 
-        let mut conn = listener(443, 2, Some(("portwatch", own_pid())));
+        let mut conn = listener(443, 2, Some(("portradar", own_pid())));
         conn.listening = false;
         conn.state = "Established".into();
         conn.remote = "10.20.30.40:55555".parse().unwrap();
@@ -1822,7 +1822,7 @@ mod tests {
 
     #[test]
     fn inspector_tabs_wrap_and_values_never_stay_revealed() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Left);
         assert_eq!(inspector(&app).tab, InspectorTab::Raw);
@@ -1850,7 +1850,7 @@ mod tests {
 
     #[test]
     fn scrolling_keys_move_and_home_goes_back_to_the_top() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
@@ -1869,10 +1869,10 @@ mod tests {
 
     #[test]
     fn inspector_actions_close_it_and_use_the_normal_safety_popups() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Char('f'));
-        // portwatch is not allowed to stop itself, so the same refusal applies.
+        // portradar is not allowed to stop itself, so the same refusal applies.
         assert!(matches!(app.mode, Mode::Normal));
         assert!(app.status.as_ref().unwrap().text.contains("Refusing"));
 
@@ -1898,7 +1898,7 @@ mod tests {
     fn inspector_open_uses_the_browser_helper() {
         let opened = Rc::new(RefCell::new(Vec::<String>::new()));
         let sink = Rc::clone(&opened);
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))])
             .with_opener(move |url| {
                 sink.borrow_mut().push(url.to_string());
                 Ok(())
@@ -1940,7 +1940,7 @@ mod tests {
         // A clipboard program accepts it.
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&seen);
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))])
             .with_copier(move |json, tx| {
                 sink.lock().unwrap().push(json);
                 tx.send(CopyResult::Tool("fake-clip".into())).unwrap();
@@ -1958,7 +1958,7 @@ mod tests {
         assert!(value.get("env").is_none());
 
         // No clipboard program: fall back to the escape code and never claim success.
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))])
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))])
             .with_copier(|_, tx| tx.send(CopyResult::NoTool).unwrap());
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Char('y'));
@@ -1987,7 +1987,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, remote)| {
-                let mut e = listener(40000 + i as u16, 100 + i as u64, Some(("portwatch", own_pid())));
+                let mut e = listener(40000 + i as u16, 100 + i as u64, Some(("portradar", own_pid())));
                 e.listening = false;
                 e.state = "Established".into();
                 e.remote = remote.parse().unwrap();
@@ -2070,7 +2070,7 @@ mod tests {
 
     #[test]
     fn v_only_reveals_on_the_env_tab() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         press(&mut app, KeyCode::Char('v'));
         assert!(!inspector(&app).reveal_env);
@@ -2127,7 +2127,7 @@ mod tests {
 
     #[test]
     fn technical_view_and_menu_entries_for_the_inspector() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         assert!(!app.technical);
         press(&mut app, KeyCode::Char('t'));
         assert!(app.technical);
@@ -2148,7 +2148,7 @@ mod tests {
     #[test]
     fn the_radar_tab_works_like_the_listening_tab() {
         let mut app = app_with(vec![
-            listener(3000, 1, Some(("portwatch", own_pid()))),
+            listener(3000, 1, Some(("portradar", own_pid()))),
             listener(5000, 2, Some(("node", 4242))),
         ]);
         press(&mut app, KeyCode::Char('4'));
@@ -2274,7 +2274,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_the_inspector() {
-        let mut app = app_with(vec![listener(3000, 1, Some(("portwatch", own_pid())))]);
+        let mut app = app_with(vec![listener(3000, 1, Some(("portradar", own_pid())))]);
         open_inspector_on_first_row(&mut app);
         let wheel = |kind| MouseEvent { kind, column: 5, row: 5, modifiers: KeyModifiers::NONE };
         app.handle_mouse(wheel(MouseEventKind::ScrollDown));

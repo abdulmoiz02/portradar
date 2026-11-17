@@ -101,7 +101,7 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
     let bar = Style::new().bg(t.bar_bg).fg(t.bar_fg);
 
     let mut left = vec![Span::styled(
-        format!(" {} portwatch ", g.logo),
+        format!(" {} portradar ", g.logo),
         Style::new().bg(t.accent).fg(t.on_accent).bold(),
     )];
     if area.width >= 90 {
@@ -593,7 +593,7 @@ fn render_details(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
             if grp.process().is_none() {
                 lines.push(Line::from(vec![
                     Span::raw("To see and manage it, run: "),
-                    Span::styled("sudo \"$(which portwatch)\"", fg(t.accent).bold()),
+                    Span::styled("sudo \"$(which portradar)\"", fg(t.accent).bold()),
                 ]));
             }
         }
@@ -1283,7 +1283,7 @@ fn process_lines(snap: &Snapshot, look: &Look) -> Vec<Line<'static>> {
             Line::from("The details of this program are not readable: it belongs to another user."),
             Line::from(vec![
                 Span::raw("Run "),
-                Span::styled("sudo \"$(which portwatch)\"", fg(t.accent).bold()),
+                Span::styled("sudo \"$(which portradar)\"", fg(t.accent).bold()),
                 Span::raw(" to see them."),
             ]),
         ];
@@ -1942,14 +1942,14 @@ fn render_tour(frame: &mut Frame, look: &Look, step: usize, area: Rect) {
 
     let (title, mut lines): (&str, Vec<Line>) = match step {
         0 => (
-            " Welcome to portwatch ",
+            " Welcome to portradar ",
             vec![
                 Line::from("Think of your computer as a building."),
                 Line::from(""),
                 Line::from("A port is a numbered door. A program opens a door to wait for"),
                 Line::from("visitors: this is called listening."),
                 Line::from(""),
-                Line::from("portwatch shows every open door and who opened it, live."),
+                Line::from("portradar shows every open door and who opened it, live."),
                 Line::from("It can also close a door by stopping the program (always asking first)."),
             ],
         ),
@@ -2114,7 +2114,7 @@ mod tests {
         let mut app = app();
         let screen = draw(&mut app, 110, 30);
         for expected in [
-            "portwatch",
+            "portradar",
             "Open ports",
             "Exposed",
             "Connections",
@@ -2397,7 +2397,7 @@ mod tests {
         for expected in ["Command menu", ": sort", "Sort by port", "Sort by uptime", "Enter run"] {
             assert!(screen.contains(expected), "missing {expected:?}:\n{screen}");
         }
-        assert!(!screen.contains("Quit portwatch"), "filtered out:\n{screen}");
+        assert!(!screen.contains("Quit portradar"), "filtered out:\n{screen}");
 
         app.mode = Mode::Palette(PaletteState { input: "zzzz".into(), selected: 0 });
         let screen = draw(&mut app, 100, 30);
@@ -2407,14 +2407,14 @@ mod tests {
         let last = palette::COMMANDS.len() - 1;
         app.mode = Mode::Palette(PaletteState { input: String::new(), selected: last });
         let screen = draw(&mut app, 100, 30);
-        assert!(screen.contains("Quit portwatch"), "{screen}");
+        assert!(screen.contains("Quit portradar"), "{screen}");
     }
 
     #[test]
     fn the_tour_has_three_readable_pages() {
         let mut app = app();
         let expectations = [
-            (0, ["Welcome to portwatch", "numbered door", "Step 1 of 3"]),
+            (0, ["Welcome to portradar", "numbered door", "Step 1 of 3"]),
             (1, ["How to read a row", "whole network", "Step 2 of 3"]),
             (2, ["Keys to know", "command menu", "Step 3 of 3"]),
         ];
@@ -2488,7 +2488,7 @@ mod tests {
     fn app_inspecting_ourselves() -> App {
         let mut app = new_app(false);
         app.tracker.update(
-            vec![entry(3000, 1, "portwatch", std::process::id())],
+            vec![entry(3000, 1, "portradar", std::process::id())],
             Instant::now(),
             SystemTime::now(),
         );
@@ -2560,7 +2560,7 @@ mod tests {
 
         // A connection row.
         let mut conn_app = new_app(false);
-        let mut conn = entry(3000, 4, "portwatch", std::process::id());
+        let mut conn = entry(3000, 4, "portradar", std::process::id());
         conn.listening = false;
         conn.state = "Established".into();
         conn.remote = "10.20.30.40:55555".parse().unwrap();
@@ -2605,7 +2605,7 @@ mod tests {
         let mut child = std::process::Command::new("/bin/sleep")
             .arg("60")
             .env_clear()
-            .env("PORTWATCH_TEST_SECRET", "hunter2-super-secret")
+            .env("PORTRADAR_TEST_SECRET", "hunter2-super-secret")
             .spawn()
             .unwrap();
         // Wait until the new program has really started: its name has changed
@@ -2634,7 +2634,7 @@ mod tests {
             for (w, h) in [(100, 30), (80, 24)] {
                 let screen = draw(&mut app, w, h);
                 assert!(!screen.contains(secret), "secret leaked on tab {digit}:\n{screen}");
-                assert!(!screen.contains("PORTWATCH_TEST_SECRET"), "variable name leaked on tab {digit}");
+                assert!(!screen.contains("PORTRADAR_TEST_SECRET"), "variable name leaked on tab {digit}");
             }
         }
         // The Raw tab scrolled all the way down shows nothing either.
@@ -2644,7 +2644,7 @@ mod tests {
         // Env tab: names visible, values masked.
         go_to(&mut app, '5');
         let masked = draw(&mut app, 100, 30);
-        assert!(masked.contains("PORTWATCH_TEST_SECRET="), "{masked}");
+        assert!(masked.contains("PORTRADAR_TEST_SECRET="), "{masked}");
         assert!(!masked.contains(secret), "value shown without asking:\n{masked}");
         assert!(masked.contains("\u{2022}"), "mask glyph expected:\n{masked}");
 
@@ -3147,7 +3147,7 @@ mod tests {
             for tab in Tab::ALL {
                 app.tab = tab;
                 let screen = draw(&mut app, 100, 36);
-                assert!(screen.contains("portwatch"), "{theme:?} {tab:?}");
+                assert!(screen.contains("portradar"), "{theme:?} {tab:?}");
             }
         }
     }
@@ -3222,7 +3222,7 @@ mod tests {
     }
 
     /// The screen as an HTML page with the real colours, so the design can be
-    /// looked at in a browser. Written to `$PORTWATCH_HTML` when it is set.
+    /// looked at in a browser. Written to `$PORTRADAR_HTML` when it is set.
     fn screen_html(app: &mut App, width: u16, height: u16) -> String {
         use ratatui::style::Modifier as M;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -3256,17 +3256,17 @@ mod tests {
         out
     }
 
-    /// `PORTWATCH_HTML=/path/file.html cargo test dump_radar_html -- --ignored`
+    /// `PORTRADAR_HTML=/path/file.html cargo test dump_radar_html -- --ignored`
     #[test]
     #[ignore]
     fn dump_radar_html() {
-        let Some(path) = std::env::var_os("PORTWATCH_HTML") else {
+        let Some(path) = std::env::var_os("PORTRADAR_HTML") else {
             return;
         };
         let mut page = String::from("<!doctype html><meta charset=utf-8><body style=\"margin:0;background:#1d1d20;color:#ddd;font-family:sans-serif\">");
         for (label, secs, w, h) in [("120x38 t=1.7", 1.7, 120u16, 38u16), ("120x38 t=4.4", 4.4, 120, 38), ("160x44 t=2.9", 2.9, 160, 44), ("100x30 t=2.9", 2.9, 100, 30)] {
             let mut live = App::new(nix::unistd::geteuid().is_root(), "me".into());
-            live.look.truecolor = std::env::var_os("PORTWATCH_256").is_none();
+            live.look.truecolor = std::env::var_os("PORTRADAR_256").is_none();
             live.rescan();
             live.tab = Tab::Radar;
             live.frozen_clock = Some(Duration::from_secs_f32(secs));
@@ -3363,13 +3363,13 @@ mod tests {
     }
 
     /// Writes the screens the README shows as JSON cell dumps (a script turns
-    /// them into PNGs): `PORTWATCH_SHOTS=/dir cargo test dump_screenshots -- --ignored`
+    /// them into PNGs): `PORTRADAR_SHOTS=/dir cargo test dump_screenshots -- --ignored`
     #[test]
     #[ignore]
     fn dump_screenshots() {
         use ratatui::crossterm::event::KeyCode;
         use ratatui::style::Modifier as M;
-        let Some(dir) = std::env::var_os("PORTWATCH_SHOTS").map(std::path::PathBuf::from) else {
+        let Some(dir) = std::env::var_os("PORTRADAR_SHOTS").map(std::path::PathBuf::from) else {
             return;
         };
         std::fs::create_dir_all(&dir).unwrap();
@@ -3438,7 +3438,7 @@ mod tests {
 
         // The Inspector needs a real process to read from /proc: a throwaway
         // web server in an empty folder, so no personal data shows.
-        let empty = std::env::temp_dir().join(format!("portwatch-demo-{}", std::process::id()));
+        let empty = std::env::temp_dir().join(format!("portradar-demo-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
         let mut child = std::process::Command::new("python3")
             .args(["-m", "http.server", "8000", "--bind", "127.0.0.1"])

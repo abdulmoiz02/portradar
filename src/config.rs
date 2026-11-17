@@ -1,7 +1,7 @@
-//! Optional settings from `~/.config/portwatch/config.toml`, plus a tiny
+//! Optional settings from `~/.config/portradar/config.toml`, plus a tiny
 //! "have you seen the tour" marker.
 //!
-//! portwatch only ever *reads* the config file. It never creates or changes
+//! portradar only ever *reads* the config file. It never creates or changes
 //! it, so running under `sudo` cannot leave root-owned files in your home.
 
 use std::fs;
@@ -48,7 +48,7 @@ impl Default for Config {
 }
 
 pub const SAMPLE: &str = "\
-# portwatch settings. Every line is optional; delete any you don't need.
+# portradar settings. Every line is optional; delete any you don't need.
 refresh_seconds = 1     # how often the table refreshes (1 to 30)
 theme = \"default\"       # default, light, mono, nord, dracula, cyberpunk, matrix, colorblind
 ascii = false           # true = plain ASCII symbols and borders
@@ -106,11 +106,11 @@ pub fn parse(text: &str) -> Result<Config, String> {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    dir_from_env("XDG_CONFIG_HOME", ".config").map(|d| d.join("portwatch").join("config.toml"))
+    dir_from_env("XDG_CONFIG_HOME", ".config").map(|d| d.join("portradar").join("config.toml"))
 }
 
 pub fn state_dir() -> Option<PathBuf> {
-    dir_from_env("XDG_STATE_HOME", ".local/state").map(|d| d.join("portwatch"))
+    dir_from_env("XDG_STATE_HOME", ".local/state").map(|d| d.join("portradar"))
 }
 
 fn dir_from_env(xdg_var: &str, home_default: &str) -> Option<PathBuf> {
@@ -122,7 +122,7 @@ fn dir_from_env(xdg_var: &str, home_default: &str) -> Option<PathBuf> {
 }
 
 /// Load settings. A missing file is normal (defaults). A broken file never
-/// stops portwatch: defaults are used and a warning is returned.
+/// stops portradar: defaults are used and a warning is returned.
 pub fn load() -> Loaded {
     let path = config_path();
     let Some(file) = path.clone().filter(|p| p.exists()) else {
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn tour_marker_round_trips_in_a_directory() {
-        let dir = std::env::temp_dir().join(format!("portwatch-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("portradar-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         assert!(!tour_seen_in(&dir));
         mark_tour_seen_in(&dir);

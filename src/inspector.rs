@@ -1,5 +1,5 @@
 //! Everything we can learn about one program and its sockets, for the
-//! Inspector screen and `portwatch inspect`.
+//! Inspector screen and `portradar inspect`.
 //!
 //! Secrets: the program's environment variables are kept apart from
 //! everything else. They are never part of the JSON, never part of the Raw
@@ -82,10 +82,10 @@ pub struct Snapshot {
     pub exited: bool,
 }
 
-/// What `y` and `portwatch inspect --json` produce. No environment.
+/// What `y` and `portradar inspect --json` produce. No environment.
 #[derive(Serialize)]
 struct Report<'a> {
-    portwatch_version: &'static str,
+    portradar_version: &'static str,
     collected_at_unix: u64,
     process: &'a Option<ProcessFacts>,
     sockets: &'a [SocketFacts],
@@ -99,7 +99,7 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// JSON for the Inspector's copy key and `portwatch inspect --json`.
+/// JSON for the Inspector's copy key and `portradar inspect --json`.
 /// It includes the command line, which can contain credentials, but never the
 /// environment.
 pub fn to_json(snapshot: &Snapshot) -> String {
@@ -109,7 +109,7 @@ pub fn to_json(snapshot: &Snapshot) -> String {
 
 pub fn report_value(snapshot: &Snapshot) -> serde_json::Value {
     let report = Report {
-        portwatch_version: env!("CARGO_PKG_VERSION"),
+        portradar_version: env!("CARGO_PKG_VERSION"),
         collected_at_unix: now_unix(),
         process: &snapshot.process,
         sockets: &snapshot.sockets,
@@ -307,7 +307,7 @@ fn socket_queues() -> HashMap<(Protocol, u64), (u32, u32)> {
     map
 }
 
-/// The raw text portwatch based its answers on. Never includes the
+/// The raw text portradar based its answers on. Never includes the
 /// environment.
 fn raw_sections(pid: u32, cgroup_text: &str, entries: &[&PortEntry]) -> Vec<(String, String)> {
     let mut sections = Vec::new();
@@ -349,7 +349,7 @@ fn raw_sections_for_sockets(entries: &[&PortEntry]) -> Vec<(String, String)> {
     sections
 }
 
-// ---- plain text, shared by the Inspector and `portwatch inspect` ---------
+// ---- plain text, shared by the Inspector and `portradar inspect` ---------
 
 pub fn human_kb(kb: u64) -> String {
     const MB: u64 = 1024;
@@ -438,7 +438,7 @@ pub fn socket_line(s: &SocketFacts, host: Option<&str>) -> String {
     )
 }
 
-/// Plain-text report for `portwatch inspect <port>` (no colours, no screen).
+/// Plain-text report for `portradar inspect <port>` (no colours, no screen).
 pub fn report_text(snapshot: &Snapshot) -> String {
     let mut out = String::new();
     out.push_str(&format!("{} (PID {})\n", snapshot.name, snapshot.pid));
@@ -471,15 +471,15 @@ pub fn report_text(snapshot: &Snapshot) -> String {
 
 const INSPECT_USAGE: &str = "\
 USAGE:
-    portwatch inspect <port> [--json]
+    portradar inspect <port> [--json]
 
-Shows everything portwatch can learn about the program using a port: its
+Shows everything portradar can learn about the program using a port: its
 process details, every socket it has, and where it comes from (systemd or
 Docker). With --json it prints machine-readable JSON (no environment
 variables) that you can pipe anywhere. The command line is included, and
 command lines can contain passwords.";
 
-/// `portwatch inspect <port> [--json]`.
+/// `portradar inspect <port> [--json]`.
 pub fn run_cli(args: &[String]) -> std::process::ExitCode {
     use std::process::ExitCode;
 
@@ -495,21 +495,21 @@ pub fn run_cli(args: &[String]) -> std::process::ExitCode {
             other => match other.parse::<u16>() {
                 Ok(p) if p > 0 && port.is_none() => port = Some(p),
                 _ => {
-                    eprintln!("portwatch inspect: unexpected argument '{other}'\n\n{INSPECT_USAGE}");
+                    eprintln!("portradar inspect: unexpected argument '{other}'\n\n{INSPECT_USAGE}");
                     return ExitCode::from(2);
                 }
             },
         }
     }
     let Some(port) = port else {
-        eprintln!("portwatch inspect: which port?\n\n{INSPECT_USAGE}");
+        eprintln!("portradar inspect: which port?\n\n{INSPECT_USAGE}");
         return ExitCode::from(2);
     };
 
     let entries = match crate::scanner::scan() {
         Ok(entries) => entries,
         Err(err) => {
-            eprintln!("portwatch inspect: could not read /proc: {err}");
+            eprintln!("portradar inspect: could not read /proc: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -584,7 +584,7 @@ mod tests {
             .filter(|e| e.process.as_ref().is_some_and(|p| p.pid == std::process::id()))
             .collect();
         assert!(!mine.is_empty());
-        (collect(std::process::id(), "portwatch", &mine), listener)
+        (collect(std::process::id(), "portradar", &mine), listener)
     }
 
     #[test]
@@ -622,7 +622,7 @@ mod tests {
         // A child with a secret in its environment.
         let mut child = std::process::Command::new("sleep")
             .arg("60")
-            .env("PORTWATCH_TEST_SECRET", "hunter2-super-secret")
+            .env("PORTRADAR_TEST_SECRET", "hunter2-super-secret")
             .spawn()
             .unwrap();
         for _ in 0..300 {
@@ -638,12 +638,12 @@ mod tests {
         // We can read our own child's environment, so the value is held for
         // the Env tab...
         let env = snap.env.as_ref().expect("same user can read the environment");
-        assert!(env.iter().any(|(k, v)| k == "PORTWATCH_TEST_SECRET" && v == "hunter2-super-secret"));
+        assert!(env.iter().any(|(k, v)| k == "PORTRADAR_TEST_SECRET" && v == "hunter2-super-secret"));
 
         // ...but it must not appear anywhere else.
         let json = to_json(&snap);
         assert!(!json.contains("hunter2"), "secret leaked into the JSON");
-        assert!(!json.contains("PORTWATCH_TEST_SECRET"), "variable names leaked into the JSON");
+        assert!(!json.contains("PORTRADAR_TEST_SECRET"), "variable names leaked into the JSON");
         let raw: String = snap.raw.iter().map(|(t, s)| format!("{t}\n{s}")).collect();
         assert!(!raw.contains("hunter2"), "secret leaked into the raw view");
         assert!(!raw.contains("environ"), "environ is not a raw section");

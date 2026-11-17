@@ -1,5 +1,5 @@
 //! "Did you know?" lines: a fact about the selected port, or a tip about
-//! portwatch itself when there is no fact to give.
+//! portradar itself when there is no fact to give.
 //!
 //! Facts are kept deliberately conservative: default ports and what the
 //! protocol is for. No dates, no history.
@@ -38,7 +38,7 @@ pub const GENERAL: &[&str] = &[
     "Press / and type mysql, network or a port number to filter the table.",
     "Press e to show only the ports other devices on your network can reach.",
     "Press Enter on a row to open the Inspector: full technical detail.",
-    "Press f to free a port: portwatch stops its program, then checks it is free.",
+    "Press f to free a port: portradar stops its program, then checks it is free.",
     "Press : to open the command menu and find any action by name.",
     "Press t to switch between the simple and the technical table.",
     "A port bound to 127.0.0.1 can only be reached from this computer.",

@@ -35,19 +35,19 @@ use app::App;
 const POLL_EVERY: Duration = Duration::from_millis(100);
 
 const HELP: &str = "\
-portwatch: monitor and manage the network ports on this machine
+portradar: monitor and manage the network ports on this machine
 
 USAGE:
-    portwatch                open the interactive dashboard
-    portwatch list           print listening ports and exit (no dashboard)
-    portwatch list --all     include every connection, with its state
-    portwatch free <port>    find what uses a port, stop it (asks first),
+    portradar                open the interactive dashboard
+    portradar list           print listening ports and exit (no dashboard)
+    portradar list --all     include every connection, with its state
+    portradar free <port>    find what uses a port, stop it (asks first),
                              and check that the port is really free
-    portwatch inspect <port> show everything about the program using a port
+    portradar inspect <port> show everything about the program using a port
                              (add --json for JSON you can pipe anywhere)
-    portwatch config         show where the optional settings file lives
-    portwatch --help         show this help
-    portwatch --version      show the version
+    portradar config         show where the optional settings file lives
+    portradar --help         show this help
+    portradar --version      show the version
 
 Inside the dashboard press ? for the key list.";
 
@@ -64,11 +64,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("-V" | "--version") => {
-            println!("portwatch {}", env!("CARGO_PKG_VERSION"));
+            println!("portradar {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("portwatch: unknown argument '{other}'\n\n{HELP}");
+            eprintln!("portradar: unknown argument '{other}'\n\n{HELP}");
             ExitCode::from(2)
         }
     }
@@ -76,7 +76,7 @@ fn main() -> ExitCode {
 
 fn dashboard() -> ExitCode {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
-        eprintln!("portwatch: the dashboard needs an interactive terminal. Use `portwatch list` instead.");
+        eprintln!("portradar: the dashboard needs an interactive terminal. Use `portradar list` instead.");
         return ExitCode::FAILURE;
     }
 
@@ -85,7 +85,7 @@ fn dashboard() -> ExitCode {
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(err) => {
-            eprintln!("portwatch: could not start the terminal UI: {err}");
+            eprintln!("portradar: could not start the terminal UI: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -108,7 +108,7 @@ fn dashboard() -> ExitCode {
     let restored = ratatui::try_restore();
 
     if let Err(err) = result.and(restored) {
-        eprintln!("portwatch: {err}");
+        eprintln!("portradar: {err}");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -186,8 +186,8 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
     Ok(())
 }
 
-/// `portwatch config`: say where the optional settings file goes and what
-/// it can contain. portwatch only reads it; it never creates the file.
+/// `portradar config`: say where the optional settings file goes and what
+/// it can contain. portradar only reads it; it never creates the file.
 fn show_config() -> ExitCode {
     let loaded = config::load();
     match &loaded.path {
@@ -213,7 +213,7 @@ fn list(args: &[String]) -> ExitCode {
         match arg.as_str() {
             "--all" | "-a" => show_all = true,
             other => {
-                eprintln!("portwatch list: unknown option '{other}'\n\n{HELP}");
+                eprintln!("portradar list: unknown option '{other}'\n\n{HELP}");
                 return ExitCode::from(2);
             }
         }
@@ -222,7 +222,7 @@ fn list(args: &[String]) -> ExitCode {
     let entries = match scanner::scan() {
         Ok(entries) => entries,
         Err(err) => {
-            eprintln!("portwatch: could not read /proc: {err}");
+            eprintln!("portradar: could not read /proc: {err}");
             return ExitCode::FAILURE;
         }
     };
@@ -232,7 +232,7 @@ fn list(args: &[String]) -> ExitCode {
         .collect();
 
     // Build the whole output first and write it once, so a closed pipe
-    // (`portwatch list | head`) ends quietly instead of panicking.
+    // (`portradar list | head`) ends quietly instead of panicking.
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -266,7 +266,7 @@ fn list(args: &[String]) -> ExitCode {
     if hidden > 0 {
         let _ = writeln!(
             out,
-            "{hidden} without process info (owned by other users; run `sudo \"$(which portwatch)\" list` to see them)"
+            "{hidden} without process info (owned by other users; run `sudo \"$(which portradar)\" list` to see them)"
         );
     }
     let _ = io::stdout().write_all(out.as_bytes());

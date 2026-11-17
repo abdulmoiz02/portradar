@@ -60,7 +60,7 @@ pub const COMMANDS: &[Entry] = &[
     Entry { name: "Switch to the next colour theme", key: "T", command: Command::NextTheme },
     Entry { name: "Show the help", key: "?", command: Command::Help },
     Entry { name: "Show the welcome tour again", key: "", command: Command::Tour },
-    Entry { name: "Quit portwatch", key: "q", command: Command::Quit },
+    Entry { name: "Quit portradar", key: "q", command: Command::Quit },
 ];
 
 /// Commands whose name contains every word typed (any case). An empty

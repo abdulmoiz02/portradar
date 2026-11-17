@@ -9,7 +9,7 @@ use nix::unistd::Pid;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum KillError {
-    /// PID 1 or portwatch itself.
+    /// PID 1 or portradar itself.
     Protected(&'static str),
     /// The process has already exited.
     Gone,
@@ -31,7 +31,7 @@ impl fmt::Display for KillError {
             ),
             KillError::NotPermitted => write!(
                 f,
-                "permission denied (owned by another user; try running portwatch with sudo)"
+                "permission denied (owned by another user; try running portradar with sudo)"
             ),
             KillError::Other(e) => write!(f, "{e}"),
         }
@@ -43,7 +43,7 @@ pub fn protected_reason(pid: u32, own_pid: u32) -> Option<&'static str> {
     if pid == 1 {
         Some("PID 1 is the init system")
     } else if pid == own_pid {
-        Some("that is portwatch itself")
+        Some("that is portradar itself")
     } else {
         None
     }

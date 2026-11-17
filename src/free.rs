@@ -1,4 +1,4 @@
-//! `portwatch free <port>`: find what is holding a port, stop it (after
+//! `portradar free <port>`: find what is holding a port, stop it (after
 //! asking), and check that the port really became free.
 //!
 //! Unlike `fuser -k`, this asks first, sends SIGTERM before anything harsher,
@@ -99,7 +99,7 @@ pub fn protocols_label(entries: &[PortEntry], port: u16) -> String {
 
 const USAGE: &str = "\
 USAGE:
-    portwatch free <port> [--yes] [--force]
+    portradar free <port> [--yes] [--force]
 
 Finds what is using the port, asks before stopping it, then checks that the
 port is really free.
@@ -122,21 +122,21 @@ pub fn run(args: &[String]) -> ExitCode {
             other => match other.parse::<u16>() {
                 Ok(p) if p > 0 && port.is_none() => port = Some(p),
                 _ => {
-                    eprintln!("portwatch free: unexpected argument '{other}'\n\n{USAGE}");
+                    eprintln!("portradar free: unexpected argument '{other}'\n\n{USAGE}");
                     return ExitCode::from(2);
                 }
             },
         }
     }
     let Some(port) = port else {
-        eprintln!("portwatch free: which port?\n\n{USAGE}");
+        eprintln!("portradar free: which port?\n\n{USAGE}");
         return ExitCode::from(2);
     };
 
     match free_port(port, yes, force) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("portwatch free: {err}");
+            eprintln!("portradar free: {err}");
             ExitCode::FAILURE
         }
     }
@@ -151,7 +151,7 @@ fn free_port(port: u16, yes: bool, force: bool) -> io::Result<ExitCode> {
         }
         Lookup::OnlyHidden { users } => {
             eprintln!(
-                "Port {port} is in use by a program owned by {} that you cannot see.\nRun it with sudo to manage it: sudo \"$(which portwatch)\" free {port}",
+                "Port {port} is in use by a program owned by {} that you cannot see.\nRun it with sudo to manage it: sudo \"$(which portradar)\" free {port}",
                 users.join(", ")
             );
             return Ok(ExitCode::FAILURE);

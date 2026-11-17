@@ -1,5 +1,5 @@
 [package]
-name = "portwatch"
+name = "portradar"
 version = "0.1.0"
 edition = "2024"
 description = "Interactive terminal dashboard to monitor and manage network ports on Linux"

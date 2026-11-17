@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Turn portwatch's screen dumps into the PNG screenshots used by the README.
+"""Turn portradar's screen dumps into the PNG screenshots used by the README.
 
-    PORTWATCH_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
+    PORTRADAR_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
     python3 docs/render_screenshots.py /tmp/shots docs/screenshots
 
 The dumps come from the real renderer with made-up demo data (see `demo_app`
@@ -119,18 +119,18 @@ def main(src, dst):
     src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
     titles = {
-        "listening": "portwatch",
-        "connections": "portwatch",
-        "events": "portwatch",
-        "radar": "portwatch",
-        "stop": "portwatch",
-        "menu": "portwatch",
-        "help": "portwatch",
-        "tour": "portwatch",
-        "technical": "portwatch",
-        "inspector-overview": "portwatch",
-        "inspector-process": "portwatch",
-        "inspector-sockets": "portwatch",
+        "listening": "portradar",
+        "connections": "portradar",
+        "events": "portradar",
+        "radar": "portradar",
+        "stop": "portradar",
+        "menu": "portradar",
+        "help": "portradar",
+        "tour": "portradar",
+        "technical": "portradar",
+        "inspector-overview": "portradar",
+        "inspector-process": "portradar",
+        "inspector-sockets": "portradar",
     }
     docs = {p.stem: json.loads(p.read_text()) for p in sorted(src.glob("*.json"))}
     for name, doc in docs.items():

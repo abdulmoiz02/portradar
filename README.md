@@ -1,4 +1,4 @@
-<h1 align="center">portwatch</h1>
+<h1 align="center">portradar</h1>
 
 <p align="center">
   <b>See every network port on your Linux machine, who is using it, and stop it safely, all from one terminal dashboard.</b>
@@ -11,10 +11,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/listening.png" alt="portwatch showing listening ports, summary cards and details" width="900">
+  <img src="docs/screenshots/listening.png" alt="portradar showing listening ports, summary cards and details" width="900">
 </p>
 
-Type `portwatch` and it opens a full-screen dashboard, a bit like `htop` but for ports. Quit with `q` and you are back in your shell. It reads the kernel's own tables, so it needs no `ss`, `lsof` or root to get started.
+Type `portradar` and it opens a full-screen dashboard, a bit like `htop` but for ports. Quit with `q` and you are back in your shell. It reads the kernel's own tables, so it needs no `ss`, `lsof` or root to get started.
 
 - [What it does](#what-it-does)
 - [Install](#install)
@@ -36,14 +36,14 @@ Type `portwatch` and it opens a full-screen dashboard, a bit like `htop` but for
 
 - **Shows what is open.** Every listening port, which program owns it, who started it, how long it has been up, and whether only your computer or the whole network can reach it.
 - **Explains it in plain words.** Each row gets a mark (normal, dev server, worth a look) with the reason, plus a sentence about what that port number is usually used for.
-- **Lets you act.** Stop a program, or free a port and have portwatch check that it really became free. It always asks first and refuses to touch anything dangerous.
+- **Lets you act.** Stop a program, or free a port and have portradar check that it really became free. It always asks first and refuses to touch anything dangerous.
 - **Goes deep when you ask.** Press `Enter` for an Inspector with process details, every socket, the systemd service or Docker container it came from, and the raw `/proc` text.
-- **Is also a normal command.** `portwatch list`, `portwatch free 3000` and `portwatch inspect 3000 --json` work in scripts and pipes.
+- **Is also a normal command.** `portradar list`, `portradar free 3000` and `portradar inspect 3000 --json` work in scripts and pipes.
 - **Has some fun in it.** A phosphor radar, history graphs, confetti when a port is freed, "Did you know?" tips and eight colour themes.
 
 ## Install
 
-portwatch needs **Linux** and a recent **stable Rust** toolchain (the project uses Rust edition 2024).
+portradar needs **Linux** and a recent **stable Rust** toolchain (the project uses Rust edition 2024).
 
 **1. Install Rust** (skip this if `cargo --version` already works):
 
@@ -56,15 +56,15 @@ Open a new terminal afterwards so `cargo` is on your `PATH`.
 **2. Get the code and install the command:**
 
 ```bash
-git clone <repository-url> portwatch
-cd portwatch
+git clone <repository-url> portradar
+cd portradar
 cargo install --path . --locked
 ```
 
-This builds a release binary and puts `portwatch` in `~/.cargo/bin`. Then run:
+This builds a release binary and puts `portradar` in `~/.cargo/bin`. Then run:
 
 ```bash
-portwatch
+portradar
 ```
 
 If you see "command not found", `~/.cargo/bin` is not on your `PATH`. Add this line to `~/.bashrc` (or your shell's startup file) and open a new terminal:
@@ -91,33 +91,33 @@ cargo install --path . --force --locked
 ### Uninstall
 
 ```bash
-cargo uninstall portwatch
-rm -rf ~/.config/portwatch ~/.local/state/portwatch   # optional: settings and the "tour seen" marker
+cargo uninstall portradar
+rm -rf ~/.config/portradar ~/.local/state/portradar   # optional: settings and the "tour seen" marker
 ```
 
 ## Quick start
 
 | Command | What it does |
 |---|---|
-| `portwatch` | Opens the dashboard |
-| `portwatch list` | Prints listening ports as a table and exits (works in scripts and pipes) |
-| `portwatch list --all` | Also includes every connection, with its state (one line per socket, for scripts) |
-| `portwatch free <port>` | Finds what is using the port, asks, stops it, and checks that the port is really free (`--yes` skips the question, `--force` sends SIGKILL) |
-| `portwatch inspect <port>` | Everything about the program using a port: process details, every socket it has, and where it comes from (systemd or Docker). Add `--json` for JSON you can pipe anywhere |
-| `portwatch config` | Shows where the optional settings file goes and what it can contain |
-| `portwatch --help` / `--version` | Help and version |
+| `portradar` | Opens the dashboard |
+| `portradar list` | Prints listening ports as a table and exits (works in scripts and pipes) |
+| `portradar list --all` | Also includes every connection, with its state (one line per socket, for scripts) |
+| `portradar free <port>` | Finds what is using the port, asks, stops it, and checks that the port is really free (`--yes` skips the question, `--force` sends SIGKILL) |
+| `portradar inspect <port>` | Everything about the program using a port: process details, every socket it has, and where it comes from (systemd or Docker). Add `--json` for JSON you can pipe anywhere |
+| `portradar config` | Shows where the optional settings file goes and what it can contain |
+| `portradar --help` / `--version` | Help and version |
 
-`portwatch free 3000` fixes the classic "address already in use" error. Unlike `fuser -k`, it asks first, tries SIGTERM before anything harsher, refuses to touch PID 1 or itself, and tells you whether the port was actually freed (exit code 0) or who still holds it (exit code 1).
+`portradar free 3000` fixes the classic "address already in use" error. Unlike `fuser -k`, it asks first, tries SIGTERM before anything harsher, refuses to touch PID 1 or itself, and tells you whether the port was actually freed (exit code 0) or who still holds it (exit code 1).
 
 To see and manage programs that belong to other users, run it with sudo (see [Permissions](#permissions-and-security)):
 
 ```bash
-sudo "$(which portwatch)"
+sudo "$(which portradar)"
 ```
 
 ## A tour of the dashboard
 
-The first time you start portwatch, a three-page tour explains what a port is and how to read a row. Press `?` for help at any time, or `:` for a command menu where you can find any action by typing its name.
+The first time you start portradar, a three-page tour explains what a port is and how to read a row. Press `?` for help at any time, or `:` for a command menu where you can find any action by typing its name.
 
 <p align="center">
   <img src="docs/screenshots/tour.png" alt="The first-run tour" width="640">
@@ -125,7 +125,7 @@ The first time you start portwatch, a three-page tour explains what a port is an
 
 ### Listening ports
 
-The main view. There is **one row per program per port**: if a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Programs you can see are never merged with each other (different PIDs stay separate). Hidden owners are grouped by account and port. `portwatch list` still shows every socket.
+The main view. There is **one row per program per port**: if a server listens on both IPv4 and IPv6 (say `127.0.0.1` and `::1`), it is one row, and its ACCESS shows the most exposed address. Programs you can see are never merged with each other (different PIDs stay separate). Hidden owners are grouped by account and port. `portradar list` still shows every socket.
 
 - **Summary cards** at the top: open ports, how many are exposed to the network, active connections, and how many ports have an owner you cannot see. Each card has a small history graph.
 - **The mark in the first column** is a quick opinion, with the reason in the Details panel:
@@ -158,7 +158,7 @@ Every active connection: local and remote address, state, and the program that o
 
 ### Events
 
-A log of every listening port that opens or closes while portwatch is running.
+A log of every listening port that opens or closes while portradar is running.
 
 <p align="center">
   <img src="docs/screenshots/events.png" alt="The Events tab" width="800">
@@ -225,7 +225,7 @@ Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` go
 | **5 Env** | Its environment variables. **Values are hidden** until you press `v`, and hidden again as soon as you change tab or close the Inspector |
 | **6 Raw** | The JSON that `y` copies, then the exact `/proc` text everything above was built from, so you can check the work |
 
-- `y` copies the JSON. It tries `wl-copy`, `xclip` and `xsel` if installed. If none is, it asks your terminal to copy (many terminals ignore that) and says so; it never claims a copy worked unless a program accepted it. Installing `wl-clipboard` (`sudo apt install wl-clipboard`) is the dependable fix on Wayland. `portwatch inspect <port> --json | wl-copy` works too.
+- `y` copies the JSON. It tries `wl-copy`, `xclip` and `xsel` if installed. If none is, it asks your terminal to copy (many terminals ignore that) and says so; it never claims a copy worked unless a program accepted it. Installing `wl-clipboard` (`sudo apt install wl-clipboard`) is the dependable fix on Wayland. `portradar inspect <port> --json | wl-copy` works too.
 - **Secrets:** environment variables are never part of the JSON, the Raw tab or the plain-text report. The JSON does include the program's **command line**, and command lines sometimes contain passwords, so look before you share it.
 - **Host names:** `r` sends the remote addresses to your DNS resolver (reverse lookup). It only happens when you ask, loopback addresses are skipped, at most 50 are looked up, and results (including failures) are remembered.
 - `k`, `f` and `o` work from the Inspector too: they close it first and then use the normal confirmation popup and safety checks.
@@ -239,12 +239,12 @@ Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` go
 </p>
 
 - You always confirm first, and the popup shows the process name, PID and port.
-- It refuses to kill PID 1 or portwatch itself.
+- It refuses to kill PID 1 or portradar itself.
 - Just before sending the signal it checks that the PID still belongs to the same program (PIDs get reused), so it cannot hit the wrong process.
 - If the process is a **Docker container** or a **systemd service**, the popup and Details panel warn you that killing it may just restart it, and tell you the right command (`docker stop ...` or `sudo systemctl stop ...`).
 - Killing only works from the Listening tab.
-- `f` and `portwatch free` do not take "I sent the signal" for success: they scan again and say whether the port is free or who still holds it. Servers that run several worker processes may need `K`.
-- `o` never opens a browser when portwatch runs as root.
+- `f` and `portradar free` do not take "I sent the signal" for success: they scan again and say whether the port is free or who still holds it. Servers that run several worker processes may need `K`.
+- `o` never opens a browser when portradar runs as root.
 
 ## The fun parts
 
@@ -254,10 +254,10 @@ Press `Enter` on a row to open a full-screen Inspector for its program. `Esc` go
   - On windows about 92 columns wide or more there are two side panels: **Range** (how many ports sit in each ring, and what the rings mean) on the left, and **Open to the network** (worrying ports first) plus a **Selected** card on the right. Narrower windows get the scope alone.
   - Each dot keeps its place unless another port in the same ring needs the same spot (positions are worked out from the port and program, never from the sort order). If the rings are too full, `+N not shown` says so.
   - `↑` `↓`, the filters, `k`, `f`, `o` and `Enter` work as on the Listening tab (sorting and the technical table only apply to the table).
-  - With `ascii = true` the radar is drawn with plain characters instead of Braille. With 24-bit colour (most modern terminals; portwatch checks `COLORTERM`) the sweep's glow is a smooth gradient, otherwise it uses a few 256-colour steps. `truecolor = false` turns the gradient off.
+  - With `ascii = true` the radar is drawn with plain characters instead of Braille. With 24-bit colour (most modern terminals; portradar checks `COLORTERM`) the sweep's glow is a smooth gradient, otherwise it uses a few 256-colour steps. `truecolor = false` turns the gradient off.
 - **History graphs** on the summary cards: the last 60 refreshes of each count (a minute at the default rate), squeezed to fit the card by keeping the highest value of each group, so a short spike still shows.
-- **Confetti** when you free a port with `f` and portwatch has checked that the port really is free. Plain `k` never celebrates.
-- **Did you know?** A line under the table with a fact about the selected port (SSH, DNS, MySQL, Redis and so on, kept to default ports and what the protocol does), or a tip about portwatch that changes every 15 seconds.
+- **Confetti** when you free a port with `f` and portradar has checked that the port really is free. Plain `k` never celebrates.
+- **Did you know?** A line under the table with a fact about the selected port (SSH, DNS, MySQL, Redis and so on, kept to default ports and what the protocol does), or a tip about portradar that changes every 15 seconds.
 - **Themes:** `default`, `light`, `mono`, `nord`, `dracula`, `cyberpunk`, `matrix` and `colorblind` (blue and orange instead of green and red). `T` cycles through them. They use 256-colour values, so they work on any 256-colour terminal.
 
 <p align="center">
@@ -268,7 +268,7 @@ For a perfectly still screen set `animations = false` (no sweep, ripples or conf
 
 ## Settings (optional)
 
-portwatch works without any settings. To change them, create `~/.config/portwatch/config.toml` (run `portwatch config` to see the exact path and a template):
+portradar works without any settings. To change them, create `~/.config/portradar/config.toml` (run `portradar config` to see the exact path and a template):
 
 ```toml
 refresh_seconds = 1     # how often the table refreshes (1 to 30)
@@ -280,23 +280,23 @@ tips = true             # false = hide the "Did you know?" line
 truecolor = true        # false = never use smooth 24-bit colour gradients
 ```
 
-portwatch only ever reads this file. If it has a mistake, portwatch shows a message in the footer and uses the defaults. The only file portwatch writes is a tiny marker (`~/.local/state/portwatch/tour-seen`) so the tour is shown once, and never when run as root.
+portradar only ever reads this file. If it has a mistake, portradar shows a message in the footer and uses the defaults. The only file portradar writes is a tiny marker (`~/.local/state/portradar/tour-seen`) so the tour is shown once, and never when run as root.
 
 ## Permissions and security
 
 As a normal user, the Linux kernel only lets you see which process owns a port if it is **your own** process. Other ports still appear, but the process shows as `? needs sudo`, and the **Hidden** card counts them. To see and manage everything:
 
 ```bash
-sudo "$(which portwatch)"
+sudo "$(which portradar)"
 ```
 
-(Plain `sudo portwatch` usually fails because sudo does not search `~/.cargo/bin`.)
+(Plain `sudo portradar` usually fails because sudo does not search `~/.cargo/bin`.)
 
-What portwatch does to keep you safe:
+What portradar does to keep you safe:
 
 - It **never sends data anywhere**. The only network activity is the reverse DNS lookup you trigger with `r` in the Inspector.
 - Environment variable **values are masked** and never appear in the JSON, the Raw tab or the text report.
-- The settings file is **read-only** to portwatch, and no files are written when it runs as root.
+- The settings file is **read-only** to portradar, and no files are written when it runs as root.
 - It refuses to stop PID 1 or itself, re-checks the PID before signalling, and always asks first.
 - `o` is refused as root, so it never opens a browser with elevated rights.
 
@@ -304,14 +304,14 @@ What portwatch does to keep you safe:
 
 | Problem | What to do |
 |---|---|
-| `portwatch: command not found` | Add `. "$HOME/.cargo/env"` to `~/.bashrc` and open a new terminal (see [Install](#install)) |
-| `sudo portwatch` says command not found | Use `sudo "$(which portwatch)"` |
+| `portradar: command not found` | Add `. "$HOME/.cargo/env"` to `~/.bashrc` and open a new terminal (see [Install](#install)) |
+| `sudo portradar` says command not found | Use `sudo "$(which portradar)"` |
 | Many rows say `? needs sudo` | That is the kernel hiding other users' processes. Run it with sudo to see them |
 | The radar glow looks flat or blocky | Your terminal is not reporting 24-bit colour. Check `echo $COLORTERM` (it should print `truecolor` or `24bit`). Under `sudo`, use `sudo -E` to keep it |
 | Boxes or odd symbols instead of icons | Your font lacks some Unicode symbols. Set `ascii = true` in the settings file |
-| `y` says it asked the terminal to copy but nothing was copied | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `portwatch inspect <port> --json` |
+| `y` says it asked the terminal to copy but nothing was copied | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `portradar inspect <port> --json` |
 | The text cannot be selected with the mouse | Hold `Shift` while selecting, or set `mouse = false` |
-| `portwatch` prints "use portwatch list" | The dashboard needs a real terminal; it was started without one (for example in a pipe) |
+| `portradar` prints "use portradar list" | The dashboard needs a real terminal; it was started without one (for example in a pipe) |
 | A killed program came straight back | It is probably a Docker container or systemd service that restarts itself. Use the command shown in the popup |
 
 ## How it works
@@ -332,14 +332,14 @@ cargo run                                                 # run the dashboard
 cargo test print_sample_screens -- --ignored --nocapture  # preview the layout as text
 ```
 
-The dashboard needs a real terminal. Without one (for example in a pipe), `portwatch` tells you to use `portwatch list`.
+The dashboard needs a real terminal. Without one (for example in a pipe), `portradar` tells you to use `portradar list`.
 
 ### Regenerating the screenshots
 
-The images in `docs/screenshots/` are drawn from portwatch's real renderer using made-up demo data (no real programs or paths). To rebuild them after a UI change you need Python 3, [Pillow](https://pypi.org/project/pillow/) and the DejaVu Sans Mono font:
+The images in `docs/screenshots/` are drawn from portradar's real renderer using made-up demo data (no real programs or paths). To rebuild them after a UI change you need Python 3, [Pillow](https://pypi.org/project/pillow/) and the DejaVu Sans Mono font:
 
 ```bash
-PORTWATCH_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
+PORTRADAR_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
 python3 docs/render_screenshots.py /tmp/shots docs/screenshots
 ```
 
@@ -358,4 +358,4 @@ Issues and pull requests are welcome. Please run `cargo test` before sending a c
 
 ## License
 
-portwatch is open source under the [MIT License](LICENSE): anyone can use, copy, change and share it, including in commercial work, as long as the copyright notice stays with it.
+portradar is open source under the [MIT License](LICENSE): anyone can use, copy, change and share it, including in commercial work, as long as the copyright notice stays with it.

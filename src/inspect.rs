@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn inspects_our_own_process() {
-        let d = inspect(std::process::id(), "portwatch");
+        let d = inspect(std::process::id(), "portradar");
         assert!(!d.cmdline.is_empty());
         assert!(d.running_for_secs.is_some());
     }
