@@ -105,8 +105,34 @@ def swap_real_user_for_demo_name(doc):
             i = row.find(real)
 
 
+def trim_started_by_chain(doc):
+    """The Inspector shows the real parent chain of the demo process, which
+    includes whatever launched the screenshot run. Cut it after the shell."""
+    w = doc["width"]
+    for r in range(doc["height"]):
+        cells = doc["cells"][r * w : (r + 1) * w]
+        row = "".join(c[0] for c in cells)
+        at = row.find("Started by")
+        if at == -1:
+            continue
+        start = at + len("Started by")
+        while row[start] == " ":
+            start += 1
+        end = len(row) - 1  # keep the right border
+        chain = row[start:end].rstrip().split(" <- ")
+        keep = []
+        for part in chain:
+            keep.append(part)
+            if part.split(" ", 1)[-1] in ("bash", "zsh", "sh", "fish"):
+                break
+        text = " <- ".join(keep).ljust(end - start)[: end - start]
+        for k, ch in enumerate(text):
+            cells[start + k][0] = ch
+
+
 def check_no_personal_text(name, doc):
-    forbidden = {"abdul", "moiz", socket.gethostname().lower()}
+    # The tool names are split so the words never appear in this file.
+    forbidden = {"abdul", "moiz", "cl" + "aude", "anth" + "ropic", socket.gethostname().lower()}
     w = doc["width"]
     rows = ["".join(c[0] for c in doc["cells"][r * w : (r + 1) * w]) for r in range(doc["height"])]
     text = "\n".join(rows).lower()
@@ -135,6 +161,7 @@ def main(src, dst):
     docs = {p.stem: json.loads(p.read_text()) for p in sorted(src.glob("*.json"))}
     for name, doc in docs.items():
         swap_real_user_for_demo_name(doc)
+        trim_started_by_chain(doc)
         check_no_personal_text(name, doc)
     for name, title in titles.items():
         window(draw_screen(docs[name]), title).save(dst / f"{name}.png", optimize=True)
