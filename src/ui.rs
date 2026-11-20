@@ -64,7 +64,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(area);
 
-    render_title_bar(frame, app, &look, title, !show_cards);
+    render_title_bar(frame, app, &look, title, !show_cards, true);
     if show_cards {
         render_cards(frame, app, &look, cards);
     }
@@ -96,7 +96,7 @@ fn fg(color: Color) -> Style {
 
 // ---- header ------------------------------------------------------------
 
-fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_hidden_warning: bool) {
+fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_hidden_warning: bool, i_works: bool) {
     let t = &look.theme;
     let g = &look.glyphs;
     let bar = Style::new().bg(t.bar_bg).fg(t.bar_fg);
@@ -124,7 +124,7 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
     // Speed and addresses fill whatever room is left; without them (nothing
     // measured yet) the plain subtitle stays.
     let used: usize = left.iter().chain(&right).map(Span::width).sum();
-    let net = net_strip(app, g, (area.width as usize).saturating_sub(used + 2));
+    let net = net_strip(app, g, (area.width as usize).saturating_sub(used + 2), i_works);
     if !net.is_empty() {
         left.push(Span::styled(format!("  {net}"), bar.fg(t.subtle)));
     } else if area.width >= 90 {
@@ -143,7 +143,7 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
 
 /// Overall speed, then this machine's address, then the public one (only
 /// known after the user asked for it; until then a hint), as many as fit in `room` columns.
-fn net_strip(app: &App, g: &crate::theme::Glyphs, room: usize) -> String {
+fn net_strip(app: &App, g: &crate::theme::Glyphs, room: usize, hint: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(s) = app.meter.overall {
         parts.push(format!(
@@ -159,7 +159,7 @@ fn net_strip(app: &App, g: &crate::theme::Glyphs, room: usize) -> String {
     }
     match app.public_ip {
         Some(ip) => parts.push(format!("public {ip}")),
-        None if !parts.is_empty() => parts.push("public: press i".to_string()),
+        None if hint && !parts.is_empty() => parts.push("public: press i".to_string()),
         None => {}
     }
     let separator = format!("  {}  ", g.dot);
@@ -1134,7 +1134,8 @@ fn render_inspector(frame: &mut Frame, app: &App, look: &Look, state: &mut Inspe
     ])
     .areas(area);
 
-    render_title_bar(frame, app, look, title, false);
+    // The Inspector has no `i` key, so its bar gets no hint to press it.
+    render_title_bar(frame, app, look, title, false, false);
 
     let titles: Vec<String> = InspectorTab::ALL
         .iter()
@@ -3405,6 +3406,18 @@ mod tests {
         let screen = draw(&mut app, 80, 24);
         assert!(screen.contains("1.2 MB/s") && screen.contains("340 KB/s"), "{screen}");
         assert!(!screen.contains("USER"), "the user column makes room on a narrow window:\n{screen}");
+    }
+
+    #[test]
+    fn the_public_ip_hint_is_not_shown_where_i_does_nothing() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut app = app_with_hidden_owner();
+        app.ips.private = Some(("192.168.1.23".parse().unwrap(), "wlp3s0".into()));
+        assert!(draw(&mut app, 100, 26).contains("public: press i"));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Inspector(_)));
+        let screen = draw(&mut app, 100, 26);
+        assert!(screen.contains("192.168.1.23") && !screen.contains("press i"), "{screen}");
     }
 
     /// A believable machine with made-up programs, so documentation
