@@ -88,11 +88,10 @@ fn stop_with(
 
     // shortcut: 5 s of slack, because the boot time can shift a little when the
     // clock is corrected; a reused PID within 5 s of the old process is not realistic.
-    if let (Some(shown), Some(now)) = (started_at, crate::scanner::started_at(pid)) {
-        if shown.abs_diff(now) > 5 {
+    if let (Some(shown), Some(now)) = (started_at, crate::scanner::started_at(pid))
+        && shown.abs_diff(now) > 5 {
             return Err(KillError::Restarted);
         }
-    }
 
     let signal = if force { Signal::SIGKILL } else { Signal::SIGTERM };
     kill(Pid::from_raw(pid as i32), signal).map_err(|errno| match errno {
@@ -107,7 +106,7 @@ fn stop_with(
 /// which our PID-reuse check would (correctly) refuse to signal.
 #[cfg(test)]
 pub(crate) fn spawn_sleeper() -> std::process::Child {
-    let child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
     for _ in 0..200 {
         let comm = fs::read_to_string(format!("/proc/{}/comm", child.id())).unwrap_or_default();
         if comm.trim_end() == "sleep" {
@@ -115,6 +114,8 @@ pub(crate) fn spawn_sleeper() -> std::process::Child {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    let _ = child.kill();
+    let _ = child.wait();
     panic!("sleep process never started");
 }
 

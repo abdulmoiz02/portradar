@@ -199,6 +199,8 @@ pub struct PendingFree {
     pub since: Instant,
 }
 
+type OpenUrl = Box<dyn FnMut(&str) -> io::Result<()>>;
+
 pub struct App {
     pub tracker: Tracker,
     pub tab: Tab,
@@ -261,7 +263,7 @@ pub struct App {
     /// Where the "tour seen" marker goes. `None` (for example as root)
     /// means nothing is ever written.
     tour_dir: Option<PathBuf>,
-    open_url: Box<dyn FnMut(&str) -> io::Result<()>>,
+    open_url: OpenUrl,
 }
 
 impl App {
@@ -312,7 +314,7 @@ impl App {
             pending_osc52: None,
             hit: HitMap::default(),
             tour_dir: None,
-            open_url: Box::new(|url| browser::open(url)),
+            open_url: Box::new(browser::open),
         }
     }
 
@@ -349,7 +351,7 @@ impl App {
         }
         let c = self.confetti.as_ref()?;
         let t = c.started.elapsed();
-        (t <= confetti::DURATION).then(|| (t.as_secs_f32(), c.seed, c.port))
+        (t <= confetti::DURATION).then_some((t.as_secs_f32(), c.seed, c.port))
     }
 
     fn celebrate(&mut self, port: u16) {
@@ -599,12 +601,11 @@ impl App {
             self.selected_index = 0;
             return;
         }
-        if let Some(sel) = &self.selected {
-            if let Some(i) = keys.iter().position(|k| k == sel) {
+        if let Some(sel) = &self.selected
+            && let Some(i) = keys.iter().position(|k| k == sel) {
                 self.selected_index = i;
                 return;
             }
-        }
         // The selected row vanished (or nothing was selected): stay at the
         // same position in the list.
         let i = self.selected_index.min(keys.len() - 1);

@@ -117,11 +117,10 @@ fn dashboard() -> ExitCode {
 
 /// The account "mine" means: the person at the keyboard, even under sudo.
 fn current_user(is_root: bool) -> String {
-    if is_root {
-        if let Some(name) = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty()) {
+    if is_root
+        && let Some(name) = std::env::var("SUDO_USER").ok().filter(|n| !n.is_empty()) {
             return name;
         }
-    }
     nix::unistd::User::from_uid(nix::unistd::geteuid())
         .ok()
         .flatten()

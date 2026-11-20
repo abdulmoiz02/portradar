@@ -445,7 +445,7 @@ mod tests {
     }
 
     /// Sort single-socket rows through the group sorter.
-    fn sort_rows<'a>(rows: &mut Vec<&'a Row>, key: SortKey, reverse: bool) {
+    fn sort_rows(rows: &mut Vec<&Row>, key: SortKey, reverse: bool) {
         let mut groups: Vec<Group> = rows.iter().map(|r| Group { members: vec![*r] }).collect();
         sort_groups(&mut groups, key, reverse);
         *rows = groups.iter().map(|g| g.first()).collect();

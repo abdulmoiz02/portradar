@@ -49,11 +49,10 @@ pub const GENERAL: &[&str] = &[
 /// The line to show: a fact about the selected port if there is one,
 /// otherwise a general tip that rotates with `elapsed_secs`.
 pub fn pick(selected: Option<(Protocol, u16)>, elapsed_secs: u64) -> &'static str {
-    if let Some((protocol, port)) = selected {
-        if let Some(fact) = fact_for(protocol, port) {
+    if let Some((protocol, port)) = selected
+        && let Some(fact) = fact_for(protocol, port) {
             return fact;
         }
-    }
     GENERAL[(elapsed_secs / ROTATE_SECS) as usize % GENERAL.len()]
 }
 

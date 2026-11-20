@@ -91,19 +91,17 @@ pub fn classify(process_name: &str, cgroup: &str) -> Option<Hint> {
                 return Some(Hint::Container(short_id(id)));
             }
             // Docker with the cgroupfs driver: /docker/<id>
-            if *seg == "docker" {
-                if let Some(id) = segments.get(i + 1) {
+            if *seg == "docker"
+                && let Some(id) = segments.get(i + 1) {
                     return Some(Hint::Container(short_id(id)));
                 }
-            }
         }
 
         // A system service: /system.slice/<name>.service
-        if let Some(i) = segments.iter().position(|s| *s == "system.slice") {
-            if let Some(unit) = segments.get(i + 1).filter(|s| s.ends_with(".service")) {
+        if let Some(i) = segments.iter().position(|s| *s == "system.slice")
+            && let Some(unit) = segments.get(i + 1).filter(|s| s.ends_with(".service")) {
                 return Some(Hint::Systemd(unit.to_string()));
             }
-        }
     }
     None
 }

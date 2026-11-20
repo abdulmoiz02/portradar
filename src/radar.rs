@@ -349,7 +349,10 @@ fn layout_with(width: u16, height: u16, blips: &[Blip], motion: Motion, style: S
     if style == Style::Scope {
         // The glow behind the sweep, a smooth wedge of tinted cells.
         if let Some(phi) = sweep {
+            // x and y also feed the geometry, so plain index loops read best.
+            #[allow(clippy::needless_range_loop)]
             for y in 0..height as usize {
+                #[allow(clippy::needless_range_loop)]
                 for x in 0..width as usize {
                     let dx = (x as f32 + 0.5) * 2.0 - cxp;
                     let dy = (y as f32 + 0.5) * 4.0 - cyp;
@@ -895,7 +898,7 @@ mod tests {
             r.cells.iter().flatten().filter_map(|m| match m { Mark::Label { ch, .. } => Some(*ch), _ => None }).collect()
         };
         // Find where the inner port sits, then sweep just past it and far from it.
-        let probe = layout_scope(100, 24, &[inner.clone()], motion(None));
+        let probe = layout_scope(100, 24, std::slice::from_ref(&inner), motion(None));
         let (x, y) = positions(&probe)[0];
         let theta = Geometry::new(100, 24).angle_of(x as i32, y as i32);
         let just_after = labels(&layout_scope(100, 24, &blips, motion(Some(theta + 0.3))));
