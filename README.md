@@ -63,6 +63,16 @@ If you see "command not found", open a new terminal, or run `. "$HOME/.cargo/env
 
 Prefer to read the script before running it? Download it first with `curl -LsSf <the same URL> -o portradar-installer.sh`, read it, then run `sh portradar-installer.sh`.
 
+### With cargo
+
+If you already have a **Rust** toolchain, install the published crate from [crates.io](https://crates.io/crates/portradar):
+
+```bash
+cargo install portradar --locked
+```
+
+It builds from source (about a minute) and puts `portradar` in `~/.cargo/bin`.
+
 ### From source
 
 You need a recent **stable Rust** toolchain (the project uses Rust edition 2024). Install Rust first if `cargo --version` does not work:
@@ -83,7 +93,13 @@ cargo install --path . --locked
 
 ### Update
 
-Run the one-command installer again: it replaces the old version with the newest release. If you installed from source:
+Run the one-command installer again: it replaces the old version with the newest release. If you installed with cargo:
+
+```bash
+cargo install portradar --locked --force
+```
+
+If you installed from source:
 
 ```bash
 git pull
@@ -94,7 +110,7 @@ cargo install --path . --force --locked
 
 ```bash
 rm ~/.cargo/bin/portradar        # installed with the one-command installer
-cargo uninstall portradar        # installed from source
+cargo uninstall portradar        # installed with cargo or from source
 rm -rf ~/.config/portradar ~/.local/state/portradar   # optional: settings, install receipt and the "tour seen" marker
 ```
 
