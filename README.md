@@ -38,6 +38,7 @@ Type `portradar` and it opens a full-screen dashboard, a bit like `htop` but for
 
 - **Shows what is open.** Every listening port, which program owns it, who started it, how long it has been up, and whether only your computer or the whole network can reach it.
 - **Explains it in plain words.** Each row gets a mark (normal, dev server, worth a look) with the reason, plus a sentence about what that port number is usually used for.
+- **Shows live internet use.** The top bar has your overall download and upload speed and your private IP address; the Connections tab has a download and upload speed for each TCP connection. Press `i` to also look up your public IP.
 - **Lets you act.** Stop a program, or free a port and have portradar check that it really became free. It always asks first and refuses to touch anything dangerous.
 - **Goes deep when you ask.** Press `Enter` for an Inspector with process details, every socket, the systemd service or Docker container it came from, and the raw `/proc` text.
 - **Is also a normal command.** `portradar list`, `portradar free 3000` and `portradar inspect 3000 --json` work in scripts and pipes.
@@ -169,7 +170,12 @@ The main view. There is **one row per program per port**: if a server listens on
 
 ### Connections
 
-Every active connection: local and remote address, state, and the program that owns it.
+Every active connection: local and remote address, state, the program that owns it, and its live **DOWN** and **UP** speed.
+
+- The numbers come from the kernel's own per-connection counters (`ss -ti`), so they are measured, not guessed. Upload counts only bytes the other side confirmed, so resends are not counted twice. A connection shows `-` until it has been seen twice.
+- **Only TCP has these counters.** UDP and QUIC (some video calls, browser traffic to Google and others) cannot be measured per connection without root-level packet capture, so those connections show no speed. The speed in the top bar comes from your network cards and **does** include them, so it can be higher than the connections add up to.
+- The top bar counts only real network cards (Wi-Fi, Ethernet). Loopback, Docker and VPN interfaces are left out so the same bytes are not counted twice.
+- Sort by speed with `s`. On windows narrower than 120 columns the USER column makes room for the speeds. Without `ss` (package `iproute2`) the speed columns are simply hidden.
 
 <p align="center">
   <img src="docs/screenshots/connections.png" alt="The Connections tab" width="800">
@@ -209,7 +215,8 @@ Your listening ports as dots on three rings. See [The fun parts](#the-fun-parts)
 | `/` | Search by port, service, program, user, address, PID (several words must all match). Try `mysql`, `network` or `this pc` |
 | `Esc` | Clear the search |
 | `e` / `m` / `h` | Toggle: only ports open to the network / only my programs / hide system noise (DNS, printing, discovery) |
-| `s` / `r` | Change sort column (port, process, PID, user, uptime, access) / reverse the order |
+| `s` / `r` | Change sort column (port, process, PID, user, uptime, access, speed) / reverse the order |
+| `i` | Show your private IP, your public IP and the data used since portradar started (the first press asks an outside server, see below) |
 | `Enter` | Open the **Inspector** (see below) |
 | `t` | Switch the table between the simple view and the technical view |
 | `k` / `K` | Stop the selected program (SIGTERM) / force stop (SIGKILL). Asks to confirm first |
@@ -313,7 +320,7 @@ sudo "$(which portradar)"
 
 What portradar does to keep you safe:
 
-- It **never sends data anywhere**. The only network activity is the reverse DNS lookup you trigger with `r` in the Inspector.
+- It **never sends data anywhere**. The only network activity is what you trigger yourself: the reverse DNS lookup with `r` in the Inspector, and the public IP lookup with `i`, which sends one DNS question for `myip.opendns.com` to OpenDNS (that is how OpenDNS learns your address; it is never done on its own).
 - Environment variable **values are masked** and never appear in the JSON, the Raw tab or the text report.
 - The settings file is **read-only** to portradar, and no files are written when it runs as root.
 - It refuses to stop PID 1 or itself, re-checks the PID before signalling, and always asks first.
@@ -339,9 +346,10 @@ What portradar does to keep you safe:
 2. **Track** (`src/model.rs`): compare each scan with the previous one. New sockets are marked "new", missing ones are kept for 5 seconds as "closed", and listening-port changes are written to the event log. The selected row is remembered by socket identity, so the cursor does not jump when rows come and go.
 3. **Inspect** (`src/inspect.rs`, `src/inspector.rs`): for the selected row, read the command line, start time and `/proc/<pid>/cgroup` to detect Docker and systemd. The Inspector collects everything in `src/inspector.rs` (process facts, sockets with queue sizes, origin, environment kept apart, raw `/proc` text) and `src/clip.rs` handles copying.
 4. **Draw** (`src/ui.rs`, `src/app.rs`): a loop checks the keyboard every 100 ms (so keys feel instant), rescans every second, and redraws with [ratatui](https://ratatui.rs).
-5. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
-6. **Fun layer:** `src/radar.rs` lays out the radar as a pure function (same ports, same cells and Braille dots; time is passed in), `src/confetti.rs` and `src/spark.rs` are pure too, `src/tips.rs` holds the facts.
-7. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
+5. **Traffic** (`src/traffic.rs`): on each scan, read `/proc/net/dev` for the physical network cards (those with a `device` entry in `/sys/class/net`) and run `ss -tinHOe` for per-socket TCP byte counters, matched to the table rows by socket inode. A meter turns the difference between two readings into bytes per second and ignores counters that went backwards. Your addresses come from the kernel (`getifaddrs`, the default route); the optional public IP is a plain DNS query over UDP.
+6. **Stop** (`src/kill.rs`): sends SIGTERM or SIGKILL after the safety checks above. `src/free.rs` adds the "free this port" check.
+7. **Fun layer:** `src/radar.rs` lays out the radar as a pure function (same ports, same cells and Braille dots; time is passed in), `src/confetti.rs` and `src/spark.rs` are pure too, `src/tips.rs` holds the facts.
+8. **Friendly layer:** `src/model.rs` merges rows for display only (events and highlighting stay per socket), `src/verdict.rs` holds the marks and the "system noise" list, `src/services.rs` the port names and exposure rules, `src/palette.rs` the command menu, `src/theme.rs` and `src/config.rs` the look and the optional settings.
 
 ## Development
 
@@ -355,7 +363,7 @@ The dashboard needs a real terminal. Without one (for example in a pipe), `portr
 
 ### Regenerating the screenshots
 
-The images in `docs/screenshots/` are drawn from portradar's real renderer using made-up demo data (no real programs or paths). To rebuild them after a UI change you need Python 3, [Pillow](https://pypi.org/project/pillow/) and the DejaVu Sans Mono font:
+The images in `docs/screenshots/` are drawn from portradar's real renderer using made-up demo data (no real programs, paths or IP addresses). To rebuild them after a UI change you need Python 3, [Pillow](https://pypi.org/project/pillow/) and the DejaVu Sans Mono font:
 
 ```bash
 PORTRADAR_SHOTS=/tmp/shots cargo test dump_screenshots -- --ignored
@@ -373,6 +381,8 @@ Issues and pull requests are welcome. Please run `cargo test` before sending a c
 - Linux only (it reads `/proc`).
 - Other users' processes are hidden unless you run as root.
 - Only TCP and UDP sockets are shown (not Unix sockets).
+- Per-connection speeds are TCP only; UDP/QUIC would need root-level packet capture. The overall speed includes everything that crosses your network cards, protocol headers included.
+- The public IP is IPv4 only and needs UDP port 53 to reach OpenDNS (some networks block it; the footer then says so).
 - No firewall management yet.
 
 ## License

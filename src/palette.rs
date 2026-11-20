@@ -10,6 +10,7 @@ pub enum Command {
     ForceStop,
     Free,
     Open,
+    NetworkInfo,
     Inspect,
     ToggleTechnical,
     NextTheme,
@@ -39,6 +40,7 @@ pub const COMMANDS: &[Entry] = &[
     Entry { name: "Force stop the selected program", key: "K", command: Command::ForceStop },
     Entry { name: "Free the selected port", key: "f", command: Command::Free },
     Entry { name: "Open the selected port in the browser", key: "o", command: Command::Open },
+    Entry { name: "Show my IP addresses and data used (asks for the public IP)", key: "i", command: Command::NetworkInfo },
     Entry { name: "Inspect the selected program (full technical detail)", key: "Enter", command: Command::Inspect },
     Entry { name: "Switch between simple and technical table", key: "t", command: Command::ToggleTechnical },
     Entry { name: "Show only ports open to the network (toggle)", key: "e", command: Command::ToggleExposed },
@@ -51,6 +53,7 @@ pub const COMMANDS: &[Entry] = &[
     Entry { name: "Sort by user", key: "s", command: Command::SortBy(SortKey::User) },
     Entry { name: "Sort by uptime (newest first)", key: "s", command: Command::SortBy(SortKey::Uptime) },
     Entry { name: "Sort by access (most local first)", key: "s", command: Command::SortBy(SortKey::Access) },
+    Entry { name: "Sort by speed (busiest connection first)", key: "s", command: Command::SortBy(SortKey::Speed) },
     Entry { name: "Reverse the sort order", key: "r", command: Command::Reverse },
     Entry { name: "Pause or resume refreshing", key: "p", command: Command::Pause },
     Entry { name: "Go to Listening ports", key: "1", command: Command::Goto(Tab::Listening) },
@@ -108,6 +111,7 @@ mod tests {
             SortKey::User,
             SortKey::Uptime,
             SortKey::Access,
+            SortKey::Speed,
         ] {
             assert!(COMMANDS.iter().any(|e| e.command == Command::SortBy(key)), "{key:?}");
         }

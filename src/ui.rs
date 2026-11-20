@@ -23,6 +23,7 @@ use crate::spark::{compress, sparkline};
 use crate::tips;
 use crate::services::{Access, service_name};
 use crate::theme::Look;
+use crate::traffic::{self, Speed};
 use crate::verdict::{Level, Verdict, exposure_note, verdict};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -104,9 +105,6 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
         format!(" {} portradar ", g.logo),
         Style::new().bg(t.accent).fg(t.on_accent).bold(),
     )];
-    if area.width >= 90 {
-        left.push(Span::styled("  ports on this computer, live", bar.fg(t.subtle)));
-    }
 
     let mut right: Vec<Span> = Vec::new();
     if show_hidden_warning && !app.is_root && app.tracker.hidden_count() > 0 {
@@ -123,6 +121,16 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
         right.push(Span::styled(format!(" {} live ", g.live), bar.fg(t.good)));
     }
 
+    // Speed and addresses fill whatever room is left; without them (nothing
+    // measured yet) the plain subtitle stays.
+    let used: usize = left.iter().chain(&right).map(Span::width).sum();
+    let net = net_strip(app, g, (area.width as usize).saturating_sub(used + 2));
+    if !net.is_empty() {
+        left.push(Span::styled(format!("  {net}"), bar.fg(t.subtle)));
+    } else if area.width >= 90 {
+        left.push(Span::styled("  ports on this computer, live", bar.fg(t.subtle)));
+    }
+
     frame.render_widget(ratatui::widgets::Block::new().style(bar), area);
     frame.render_widget(Paragraph::new(Line::from(left)).style(bar), area);
     frame.render_widget(
@@ -131,6 +139,39 @@ fn render_title_bar(frame: &mut Frame, app: &App, look: &Look, area: Rect, show_
             .alignment(Alignment::Right),
         area,
     );
+}
+
+/// Overall speed, then this machine's address, then the public one (only
+/// known after the user asked for it; until then a hint), as many as fit in `room` columns.
+fn net_strip(app: &App, g: &crate::theme::Glyphs, room: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = app.meter.overall {
+        parts.push(format!(
+            "{} {}  {} {}",
+            g.down,
+            traffic::human_speed(s.down),
+            g.up,
+            traffic::human_speed(s.up)
+        ));
+    }
+    if let Some((ip, _)) = &app.ips.private {
+        parts.push(ip.to_string());
+    }
+    match app.public_ip {
+        Some(ip) => parts.push(format!("public {ip}")),
+        None if !parts.is_empty() => parts.push("public: press i".to_string()),
+        None => {}
+    }
+    let separator = format!("  {}  ", g.dot);
+    let mut text = String::new();
+    for part in parts {
+        let longer = format!("{}{}{part}", text, if text.is_empty() { "" } else { &separator });
+        if longer.chars().count() > room {
+            break;
+        }
+        text = longer;
+    }
+    text
 }
 
 fn render_cards(frame: &mut Frame, app: &App, look: &Look, area: Rect) {
@@ -232,15 +273,28 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
         .iter()
         .position(|grp| Some(grp.key()) == app.selected);
 
+    // The speed columns exist only for connections, and only while `ss` works.
+    // On a narrow window they take the place of the USER column, and the
+    // technical table (already wide) skips them.
+    let narrow = area.width < 120;
+    let show_speed = !listening && app.meter.per_connection && !(narrow && app.technical);
+    let drop_user = show_speed && narrow;
     let table_rows: Vec<TableRow> = groups
         .iter()
         .map(|grp| {
-            let cells = match (listening, app.technical) {
+            let mut cells = match (listening, app.technical) {
                 (true, false) => listening_cells(grp, &app.me, look),
                 (true, true) => technical_listening_cells(grp, &app.me, look),
                 (false, false) => connection_cells(grp, look),
                 (false, true) => technical_connection_cells(grp, look),
             };
+            if show_speed {
+                if drop_user {
+                    cells.pop();
+                }
+                let speed = app.meter.speeds.get(&grp.first().entry.inode).copied();
+                cells.extend(speed_cells(speed, look));
+            }
             let style = match grp.state(now) {
                 RowState::New => fg(t.good).bold(),
                 RowState::Closed => fg(t.bad).add_modifier(Modifier::CROSSED_OUT),
@@ -277,11 +331,25 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
         )
     };
 
-    let (header, widths) = if app.technical {
+    let (mut header, mut widths) = if app.technical {
         technical_columns(listening)
     } else {
         (header, widths)
     };
+    if show_speed {
+        if drop_user {
+            header.pop();
+            widths = vec![
+                Constraint::Length(5),
+                Constraint::Min(12),
+                Constraint::Min(16),
+                Constraint::Length(11),
+                Constraint::Min(10),
+            ];
+        }
+        header.extend(["DOWN", "UP"]);
+        widths.extend([Constraint::Length(8); 2]);
+    }
 
     let mut title = vec![
         Span::styled(
@@ -301,6 +369,9 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
     for name in app.active_filters() {
         title.push(Span::styled(format!("{} {name} ", g.dot), fg(t.warn)));
     }
+    if show_speed {
+        title.push(Span::styled(format!("{} speeds: TCP only ", g.dot), fg(t.subtle)));
+    }
     if app.technical {
         title.push(Span::styled(format!("{} technical view ", g.dot), fg(t.warn)));
     }
@@ -316,7 +387,13 @@ fn render_table(frame: &mut Frame, app: &mut App, look: &Look, area: Rect, now: 
         block = block.title_bottom(tip);
     }
     let table = Table::new(table_rows, widths)
-        .header(TableRow::new(header).style(fg(t.dim).bold()))
+        .header(
+            TableRow::new(header.into_iter().map(|h| match h {
+                "DOWN" | "UP" => Cell::from(Line::from(h).right_aligned()),
+                _ => Cell::from(h),
+            }))
+            .style(fg(t.dim).bold()),
+        )
         .block(block)
         .row_highlight_style(Style::new().bg(t.select_bg).fg(t.select_fg).bold())
         .highlight_symbol(g.row_bar)
@@ -425,6 +502,21 @@ fn listening_cells(grp: &Group<'_>, me: &str, look: &Look) -> Vec<Cell<'static>>
         Cell::from(grp.user().to_string()),
         up,
     ]
+}
+
+/// Right-aligned download and upload speed of one connection. `None` means
+/// not measured yet (new connection, or not TCP).
+fn speed_cells(speed: Option<Speed>, look: &Look) -> [Cell<'static>; 2] {
+    let t = &look.theme;
+    let cell = |bytes: Option<f64>| {
+        let (text, color) = match bytes {
+            None => ("-".to_string(), t.dim),
+            Some(b) if b < 1.0 => ("0 B/s".to_string(), t.dim),
+            Some(b) => (traffic::human_speed(b), Color::Reset),
+        };
+        Cell::from(Line::from(Span::styled(text, fg(color))).right_aligned())
+    };
+    [cell(speed.map(|s| s.down)), cell(speed.map(|s| s.up))]
 }
 
 fn connection_cells(grp: &Group<'_>, look: &Look) -> Vec<Cell<'static>> {
@@ -695,6 +787,7 @@ fn footer_keys(app: &App, look: &Look) -> Vec<(String, &'static str, bool)> {
             (":".into(), "Menu", false),
             ("Enter".into(), "Inspect", false),
             (tabs, "Tabs", false),
+            ("i".into(), "IPs", false),
             ("m".into(), "Mine", app.only_mine),
             ("t".into(), "Tech", app.technical),
             ("s".into(), "Sort", false),
@@ -860,7 +953,7 @@ fn render_help(frame: &mut Frame, look: &Look, area: Rect) {
         ("s  /  r".into(), "change the sort column / reverse it"),
         ("Enter".into(), "inspect the program: full technical detail"),
         ("t".into(), "switch between the simple and the technical table"),
-        ("p  /  T".into(), "pause or resume / switch colour theme"),
+        ("p  i  T".into(), "pause / my IPs and data used (asks OpenDNS) / theme"),
         (":  or  Ctrl+P".into(), "command menu: find any action by name"),
         ("q  /  Ctrl+C".into(), "quit"),
         ("Mouse".into(), "click tabs/rows, wheel scrolls; Shift+drag selects text"),
@@ -3280,6 +3373,40 @@ mod tests {
         std::fs::write(path, page).unwrap();
     }
 
+    #[test]
+    fn the_title_bar_and_connections_show_speeds_when_measured() {
+        use crate::traffic::Speed;
+        let mut app = app_with_hidden_owner();
+        app.ips.private = Some(("192.168.1.23".parse().unwrap(), "wlp3s0".into()));
+        app.meter.overall = Some(Speed { down: 1_200_000.0, up: 80_000.0 });
+        app.meter.per_connection = true;
+        app.meter.speeds.insert(4, Speed { down: 340_000.0, up: 0.0 });
+
+        let screen = draw(&mut app, 100, 26);
+        assert!(screen.contains("1.2 MB/s") && screen.contains("80 KB/s"), "{screen}");
+        assert!(screen.contains("192.168.1.23"), "{screen}");
+        assert!(screen.contains("public: press i"), "{screen}");
+        assert!(!screen.contains("203.0.113"), "the public IP is shown only after it was asked for");
+
+        go_to(&mut app, '2');
+        let screen = draw(&mut app, 120, 26);
+        let header = screen.lines().find(|l| l.contains("PROTO")).unwrap();
+        let row = screen.lines().find(|l| l.contains("10.20.30.40:55555")).unwrap();
+        assert!(header.contains("USER") && header.contains("DOWN") && header.contains("UP"), "{header}");
+        assert!(row.contains("340 KB/s") && row.contains("0 B/s"), "{row}");
+
+        // Without `ss` the columns disappear instead of showing zeros.
+        app.meter.per_connection = false;
+        let screen = draw(&mut app, 120, 26);
+        assert!(!screen.contains("DOWN"), "{screen}");
+
+        // 80 columns still keeps the speed and the rows readable.
+        app.meter.per_connection = true;
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("1.2 MB/s") && screen.contains("340 KB/s"), "{screen}");
+        assert!(!screen.contains("USER"), "the user column makes room on a narrow window:\n{screen}");
+    }
+
     /// A believable machine with made-up programs, so documentation
     /// screenshots never show real processes or paths.
     fn demo_app(theme: ThemeName) -> App {
@@ -3352,6 +3479,21 @@ mod tests {
                 wobble(5, 11) as usize,
                 4,
             );
+        }
+        // Made-up traffic: the public address is from the documentation range.
+        app.meter.per_connection = true;
+        app.meter.overall = Some(crate::traffic::Speed { down: 1_240_000.0, up: 86_000.0 });
+        app.ips.private = Some(("192.168.1.23".parse().unwrap(), "wlp3s0".into()));
+        app.public_ip = Some("203.0.113.7".parse().unwrap());
+        for (inode, down, up) in [
+            (30, 820_000.0, 12_000.0),
+            (31, 41_000.0, 2_000.0),
+            (32, 6_500.0, 900.0),
+            (33, 310_000.0, 48_000.0),
+            (34, 0.0, 0.0),
+            (35, 1_200.0, 300.0),
+        ] {
+            app.meter.speeds.insert(inode, crate::traffic::Speed { down, up });
         }
         app.tab = Tab::Listening;
         let key = app.visible().into_iter().find(|g| g.first().entry.local.port() == 3000).map(|g| g.key());

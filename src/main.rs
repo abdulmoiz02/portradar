@@ -15,6 +15,7 @@ mod services;
 mod spark;
 mod theme;
 mod tips;
+mod traffic;
 mod ui;
 mod verdict;
 
@@ -139,8 +140,10 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
         .with_tour_dir(tour_dir);
     let scan_every = loaded.config.refresh();
     app.rescan();
+    app.apply_traffic(traffic::sample(), traffic::local_ips());
     // Later scans run on another thread, so a slow /proc walk never delays a key press.
     let (scan_tx, scan_rx) = mpsc::channel();
+    let (traffic_tx, traffic_rx) = mpsc::channel();
     let mut scanning = false;
     match &loaded.warning {
         Some(warning) => app.set_status(warning.clone(), true),
@@ -179,6 +182,9 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
             let _ = out.flush();
         }
 
+        while let Ok((sample, ips)) = traffic_rx.try_recv() {
+            app.apply_traffic(sample, ips);
+        }
         if let Ok(result) = scan_rx.try_recv() {
             app.apply_scan(result);
             scanning = false;
@@ -188,8 +194,9 @@ fn run(terminal: &mut DefaultTerminal, loaded: &config::Loaded) -> io::Result<()
         if !scanning && (app.rescan_now || (due && !app.paused)) {
             app.rescan_now = false;
             scanning = true;
-            let tx = scan_tx.clone();
+            let (tx, traffic) = (scan_tx.clone(), traffic_tx.clone());
             std::thread::spawn(move || {
+                let _ = traffic.send((traffic::sample(), traffic::local_ips()));
                 let _ = tx.send(scanner::scan());
             });
         }

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::scanner::{EntryKey, PortEntry, ProcessInfo, Protocol};
 use crate::services::{Access, service_name};
+use crate::traffic::Speed;
 
 /// How long a freshly opened port is shown in green.
 pub const NEW_HIGHLIGHT: Duration = Duration::from_secs(3);
@@ -190,6 +191,8 @@ pub enum SortKey {
     Uptime,
     /// Least exposed first (this PC only, then one network, then all).
     Access,
+    /// Fastest TCP connection first (download plus upload).
+    Speed,
 }
 
 impl SortKey {
@@ -200,7 +203,8 @@ impl SortKey {
             SortKey::Pid => SortKey::User,
             SortKey::User => SortKey::Uptime,
             SortKey::Uptime => SortKey::Access,
-            SortKey::Access => SortKey::Port,
+            SortKey::Access => SortKey::Speed,
+            SortKey::Speed => SortKey::Port,
         }
     }
 
@@ -212,6 +216,7 @@ impl SortKey {
             SortKey::User => "user",
             SortKey::Uptime => "uptime",
             SortKey::Access => "access",
+            SortKey::Speed => "speed",
         }
     }
 }
@@ -350,7 +355,12 @@ pub fn group_rows<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Vec<Group<'a>>
         .collect()
 }
 
-pub fn sort_groups(groups: &mut [Group<'_>], key: SortKey, reverse: bool) {
+pub fn sort_groups(
+    groups: &mut [Group<'_>],
+    key: SortKey,
+    reverse: bool,
+    speeds: &HashMap<u64, Speed>,
+) {
     // Always start from port order so ties are stable.
     groups.sort_by_key(|g| (g.protocol(), g.port(), g.first().entry.local.ip()));
     match key {
@@ -370,6 +380,12 @@ pub fn sort_groups(groups: &mut [Group<'_>], key: SortKey, reverse: bool) {
             None => (1, std::cmp::Reverse(0)),
         }),
         SortKey::Access => groups.sort_by_key(|g| g.access()),
+        SortKey::Speed => groups.sort_by(|a, b| {
+            let total = |g: &Group<'_>| {
+                speeds.get(&g.first().entry.inode).map_or(0.0, |s| s.down + s.up)
+            };
+            total(b).total_cmp(&total(a))
+        }),
     }
     if reverse {
         groups.reverse();
@@ -447,7 +463,7 @@ mod tests {
     /// Sort single-socket rows through the group sorter.
     fn sort_rows(rows: &mut Vec<&Row>, key: SortKey, reverse: bool) {
         let mut groups: Vec<Group> = rows.iter().map(|r| Group { members: vec![*r] }).collect();
-        sort_groups(&mut groups, key, reverse);
+        sort_groups(&mut groups, key, reverse, &HashMap::new());
         *rows = groups.iter().map(|g| g.first()).collect();
     }
 
@@ -697,5 +713,20 @@ mod tests {
         sort_rows(&mut rows, SortKey::Port, true);
         let ports: Vec<_> = rows.iter().map(|r| r.entry.local.port()).collect();
         assert_eq!(ports, vec![3, 2, 1]);
+    }
+    #[test]
+    fn speed_sort_puts_the_busiest_connection_first() {
+        let a = row(entry(1, 11, Some("a"), false));
+        let b = row(entry(2, 22, Some("b"), false));
+        let (ia, ib) = (a.entry.inode, b.entry.inode);
+        let speeds = HashMap::from([
+            (ia, Speed { down: 10.0, up: 0.0 }),
+            (ib, Speed { down: 5.0, up: 50.0 }),
+        ]);
+        let mut groups: Vec<Group> = vec![Group { members: vec![&a] }, Group { members: vec![&b] }];
+        sort_groups(&mut groups, SortKey::Speed, false, &speeds);
+        assert_eq!(groups[0].port(), 2);
+        sort_groups(&mut groups, SortKey::Speed, true, &speeds);
+        assert_eq!(groups[0].port(), 1);
     }
 }

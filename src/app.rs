@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -24,6 +24,7 @@ use crate::palette::{self, Command};
 use crate::scanner::{self, Protocol};
 use crate::spark::History;
 use crate::theme::Look;
+use crate::traffic::{self, LocalIps, Meter};
 use crate::verdict;
 
 /// Number of pages in the first-run tour.
@@ -264,12 +265,22 @@ pub struct App {
     /// means nothing is ever written.
     tour_dir: Option<PathBuf>,
     open_url: OpenUrl,
+    /// Overall and per-connection speeds.
+    pub meter: Meter,
+    pub ips: LocalIps,
+    /// Only ever filled after the user pressed `i`: it needs an outside server.
+    pub public_ip: Option<Ipv4Addr>,
+    asking_public_ip: bool,
+    ip_tx: Sender<Result<Ipv4Addr, String>>,
+    ip_rx: Receiver<Result<Ipv4Addr, String>>,
+    ip_lookup: Arc<dyn Fn() -> Result<Ipv4Addr, String> + Send + Sync>,
 }
 
 impl App {
     pub fn new(is_root: bool, me: String) -> Self {
         let (dns_tx, dns_rx) = channel();
         let (copy_tx, copy_rx) = channel();
+        let (ip_tx, ip_rx) = channel();
         App {
             tracker: Tracker::default(),
             tab: Tab::Listening,
@@ -315,6 +326,13 @@ impl App {
             hit: HitMap::default(),
             tour_dir: None,
             open_url: Box::new(browser::open),
+            meter: Meter::default(),
+            ips: LocalIps::default(),
+            public_ip: None,
+            asking_public_ip: false,
+            ip_tx,
+            ip_rx,
+            ip_lookup: Arc::new(traffic::public_ipv4),
         }
     }
 
@@ -422,6 +440,12 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn with_ip_lookup(mut self, f: impl Fn() -> Result<Ipv4Addr, String> + Send + Sync + 'static) -> Self {
+        self.ip_lookup = Arc::new(f);
+        self
+    }
+
+    #[cfg(test)]
     pub fn with_copier(mut self, f: impl Fn(String, Sender<CopyResult>) + Send + Sync + 'static) -> Self {
         self.copier = Arc::new(f);
         self
@@ -449,6 +473,17 @@ impl App {
             self.set_status("Host names looked up. Addresses that have none stay as numbers", false);
         }
 
+        while let Ok(answer) = self.ip_rx.try_recv() {
+            self.asking_public_ip = false;
+            match answer {
+                Ok(ip) => {
+                    self.public_ip = Some(ip);
+                    self.show_network_info();
+                }
+                Err(why) => self.set_status(format!("Could not find the public IP: {why}"), true),
+            }
+        }
+
         while let Ok(result) = self.copy_rx.try_recv() {
             match result {
                 CopyResult::Tool(program) => {
@@ -468,6 +503,55 @@ impl App {
                 }
             }
         }
+    }
+
+    /// New counters from the background sampler.
+    pub fn apply_traffic(&mut self, sample: traffic::Sample, ips: LocalIps) {
+        self.meter.update(sample);
+        self.ips = ips;
+    }
+
+    /// Key `i`: the addresses of this machine and the data used so far. The
+    /// public address is the only thing that needs the internet, so it is
+    /// looked up here, once, and never before the user asks.
+    fn network_info(&mut self) {
+        if self.public_ip.is_none() && !self.asking_public_ip {
+            self.asking_public_ip = true;
+            let (lookup, tx) = (Arc::clone(&self.ip_lookup), self.ip_tx.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(lookup());
+            });
+            self.set_status("Asking an outside server (OpenDNS) for your public IP ...", false);
+        } else if self.public_ip.is_some() {
+            self.show_network_info();
+        }
+    }
+
+    /// One footer line (78 columns at most): addresses, then data used, then
+    /// the IPv6 address if there is still room.
+    fn show_network_info(&mut self) {
+        let (down, up) = (&self.look.glyphs.down, &self.look.glyphs.up);
+        let mut parts = Vec::new();
+        if let Some((ip, _)) = &self.ips.private {
+            parts.push(ip.to_string());
+        }
+        if let Some(ip) = self.public_ip {
+            parts.push(format!("public {ip}"));
+        }
+        parts.push(format!(
+            "used {down}{} {up}{}",
+            traffic::human_bytes(self.meter.total_down),
+            traffic::human_bytes(self.meter.total_up)
+        ));
+        let separator = format!(" {} ", self.look.glyphs.dot);
+        let mut text = parts.join(&separator);
+        if let Some(ip) = self.ips.ipv6 {
+            let longer = format!("{text}{separator}{ip}");
+            if longer.chars().count() <= 78 {
+                text = longer;
+            }
+        }
+        self.set_status(text, false);
     }
 
     /// A terminal escape sequence the main loop should write out, once.
@@ -522,7 +606,7 @@ impl App {
                 .filter(|r| r.entry.listening == want_listening),
         );
         groups.retain(|g| self.passes_filters(g));
-        model::sort_groups(&mut groups, self.sort, self.reverse);
+        model::sort_groups(&mut groups, self.sort, self.reverse, &self.meter.speeds);
         groups
     }
 
@@ -914,6 +998,7 @@ impl App {
             Command::ForceStop => self.request_stop(true, false),
             Command::Free => self.request_stop(false, true),
             Command::Open => self.request_open(),
+            Command::NetworkInfo => self.network_info(),
             Command::Inspect => self.open_inspector(),
             Command::ToggleTechnical => self.toggle_technical(),
             Command::NextTheme => self.cycle_theme(),
@@ -1039,6 +1124,7 @@ impl App {
             KeyCode::Char('K') => self.request_stop(true, false),
             KeyCode::Char('f') => self.request_stop(false, true),
             KeyCode::Char('o') => self.request_open(),
+            KeyCode::Char('i') => self.network_info(),
             _ => {}
         }
     }
@@ -1077,6 +1163,8 @@ impl App {
 
     fn toggle_pause(&mut self) {
         self.paused = !self.paused;
+        // Both ways: the time that passed while paused must not be averaged in.
+        self.meter.pause();
         let text = if self.paused {
             "Paused: the table is frozen (press p to resume)"
         } else {
@@ -2306,5 +2394,77 @@ mod tests {
         press(&mut app, KeyCode::Char('/'));
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn the_public_ip_is_only_looked_up_when_asked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let mut app = app_with(vec![]).with_ip_lookup(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok("203.0.113.7".parse().unwrap())
+        });
+        app.tick();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing is asked before the key");
+        assert_eq!(app.public_ip, None);
+
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('i')); // a second press while waiting asks nobody again
+        for _ in 0..200 {
+            app.tick();
+            if app.public_ip.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.public_ip, Some("203.0.113.7".parse().unwrap()));
+        assert!(app.status.as_ref().unwrap().text.contains("public 203.0.113.7"));
+        press(&mut app, KeyCode::Char('i')); // known now: shown again, not asked again
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_public_ip_lookup_is_reported_and_can_be_retried() {
+        let mut app = app_with(vec![]).with_ip_lookup(|| Err("no answer".into()));
+        press(&mut app, KeyCode::Char('i'));
+        for _ in 0..200 {
+            app.tick();
+            if app.status.as_ref().is_some_and(|s| s.text.contains("Could not")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = app.status.as_ref().unwrap();
+        assert!(status.text.contains("Could not find the public IP: no answer"), "{}", status.text);
+        assert!(!app.asking_public_ip);
+    }
+
+    #[test]
+    fn the_network_info_line_fits_an_80_column_footer_even_in_the_worst_case() {
+        let mut app = app_with(vec![]);
+        app.ips.private = Some(("255.255.255.255".parse().unwrap(), "wlp3s0".into()));
+        app.ips.ipv6 = Some("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap());
+        app.public_ip = Some("255.255.255.255".parse().unwrap());
+        app.meter.total_down = 999_000_000_000_000;
+        app.meter.total_up = 999_000_000_000_000;
+        app.show_network_info();
+        let text = app.status.as_ref().unwrap().text.clone();
+        assert!(text.chars().count() <= 78, "{} chars: {text}", text.chars().count());
+        assert!(text.contains("public 255.255.255.255") && text.contains("used"), "{text}");
+        // A short line has room for the IPv6 address too.
+        app.ips.private = None;
+        app.public_ip = None;
+        app.meter.total_down = 5;
+        app.show_network_info();
+        assert!(app.status.as_ref().unwrap().text.contains("2001:db8"));
+    }
+
+    #[test]
+    fn pausing_forgets_the_speed_baseline() {
+        let mut app = app_with(vec![]);
+        app.meter.overall = Some(traffic::Speed { down: 1.0, up: 1.0 });
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.meter.overall.is_none());
     }
 }

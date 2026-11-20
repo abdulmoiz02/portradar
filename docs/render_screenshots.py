@@ -11,6 +11,7 @@ the DejaVu Sans Mono font.
 import getpass
 import json
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -130,9 +131,21 @@ def trim_started_by_chain(doc):
             cells[start + k][0] = ch
 
 
+def own_addresses():
+    """This machine's real IP addresses, which must never reach a screenshot."""
+    out = subprocess.run(["ip", "-o", "addr"], capture_output=True, text=True).stdout
+    found = set()
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) > 3 and fields[2] in ("inet", "inet6"):
+            found.add(fields[3].split("/")[0].lower())
+    return found - {"127.0.0.1", "::1"}
+
+
 def check_no_personal_text(name, doc):
     # The tool names are split so the words never appear in this file.
     forbidden = {"abdul", "moiz", "cl" + "aude", "anth" + "ropic", socket.gethostname().lower()}
+    forbidden |= own_addresses()
     w = doc["width"]
     rows = ["".join(c[0] for c in doc["cells"][r * w : (r + 1) * w]) for r in range(doc["height"])]
     text = "\n".join(rows).lower()
